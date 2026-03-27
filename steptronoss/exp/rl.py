@@ -487,10 +487,16 @@ class PPOLikeTrainerConfig(TrainerConfig):
     flow_cfg: FlowControllerConfig = FlowControllerConfig
     """Flow controller config for rollout collection."""
 
-    def get_trainer_cls(self) -> type:
-        from steptronoss.core.trainers.ppo_trainer import PPOTrainer
+    use_megatron: bool = False
+    """If True, use Megatron PPOTrainer"""
 
-        return PPOTrainer
+    def get_trainer_cls(self) -> type:
+        if self.use_megatron:
+            from steptronoss.core.trainers.megatron_ppo_trainer import MegatronPPOTrainer
+            return MegatronPPOTrainer
+        else:
+            from steptronoss.core.trainers.ppo_trainer import PPOTrainer
+            return PPOTrainer
 
     vocab_size = Ref("..tokenizer_cfg.padded_vocab_size")
     build_tokenizer = Ref("..tokenizer_cfg.build_tokenizer")

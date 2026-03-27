@@ -69,7 +69,7 @@ class TrainerPromptStream(Nextable):
         return self.dataloader.load_state_dict(sd)
 
 
-class PPOTrainer(BaseTrainer):
+class MegatronPPOTrainer(BaseTrainer):
     exp: PPOLikeExp
     """Base class for PPO trainer. Access experiment attributes via `self.exp` in trainer."""
 
