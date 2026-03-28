@@ -49,10 +49,53 @@ dependencies = [
     "asciichartpy>=1.5.25",
 ]
 
+[project.optional-dependencies]
+mcore = [
+    # also need cudnn (https://developer.nvidia.com/cudnn-downloads?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=20.04&target_type=deb_network)
+    # wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb
+    # sudo dpkg -i cuda-keyring_1.1-1_all.deb
+    # sudo apt-get update
+    # sudo apt-get install cudnn-cuda-12
+
+    # This dependency also needs to be compatible with the spec in Megatron-Bridge/pyproject.toml.
+    # It is specified here since we don't directly use Megatron-Bridge/pyproject.toml as the project root,
+    # but install mcore via this optional extra.
+    "transformer-engine[pytorch]==2.8.0",
+    "megatron-core",
+    "megatron-bridge",
+    # Remove this once https://github.com/NVIDIA-NeMo/RL/issues/501 resolved
+    "vllm==0.11.2",
+    # Flash-attn version should be selected to satisfy both TE + vLLM requirements (xformers in particular)
+    # https://github.com/NVIDIA/TransformerEngine/blob/v2.3/transformer_engine/pytorch/attention/dot_product_attention/utils.py#L108
+    # https://github.com/facebookresearch/xformers/blob/8354497deb2c04c67fbb2e2ad911e86530da0e90/xformers/ops/fmha/flash.py#L76
+    "flash-attn==2.8.1",
+]
+
 [tool.uv]
 required-version = ">=0.8.4"
+preview = true # Enable preview features like extra-build-dependencies
+no-build-isolation-package = [
+    "transformer-engine-torch",
+    "transformer-engine",
+    "flash-attn",
+    "mamba-ssm",
+    "causal-conv1d",
+    "deep_gemm",
+    "deep_ep",
+    # nv-grouped-gemm: keep build isolation so [tool.uv.extra-build-dependencies] injects setuptools
+    # (no-build-isolation + uv lock temp env lacks setuptools and hits prepare_metadata errors)
+]
+# TE/mcore/flash-attn need build deps available on sync
+default-groups = ["dev", "build"]
+link-mode = "copy"
+# Align TE with the mcore extra; Megatron-Bridge workspace may pin a newer TE via its own pyproject
+override-dependencies = [
+    "transformer-engine[pytorch]==2.8.0",
+]
 
 [tool.uv.sources]
+megatron-core = { workspace = true }
+megatron-bridge = { workspace = true }
 nv-grouped-gemm = { git = "https://github.com/fanshiqing/grouped_gemm.git" }
 
 [project.urls]
@@ -60,7 +103,24 @@ Homepage = "https://Randomizez.github.io/SteptronOss/"
 Repository = "https://github.com/Randomizez/SteptronOss"
 Documentation = "https://Randomizez.github.io/SteptronOss/"
 
+[tool.uv.workspace]
+members = [
+  "3rdparty/Megatron-LM-workspace",
+  "3rdparty/Megatron-Bridge-workspace",
+]
+
 [dependency-groups]
+# Build deps for TE / megatron-core / flash-attn (mirrors nemo-rl dependency-groups.build)
+build = [
+    "torch==2.9.0",
+    "setuptools",
+    "packaging",
+    "einops",
+    "hatchling",
+    "pybind11",
+    "psutil",
+    "ninja",
+]
 dev = [
     "pytest>=9.0.2",
     "pre-commit>=4.5.0",
@@ -82,6 +142,11 @@ dev = [
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
+transformer-engine = [{ requirement = "torch", match-runtime = true }]
+transformer-engine-torch = [{ requirement = "torch", match-runtime = true }]
+# grouped_gemm does not declare setuptools in build-system.requires; needed for prepare_metadata_for_build_wheel
+# torch: nv-grouped-gemm has no PEP 621 dependency-metadata for match-runtime; pin to project torch
+nv-grouped-gemm = ["setuptools", "torch==2.9.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -104,6 +169,7 @@ markers = [
     "gpu: GPU-only tests",
     "node2: requires 2 processes (torchrun --nproc-per-node=2)",
     "xdist_group(name): serialize tests that share the same torchrun resources",
+    "mcore: tests that require the mcore extra",
 ]
 
 [tool.ruff]
