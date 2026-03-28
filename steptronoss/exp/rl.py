@@ -493,9 +493,11 @@ class PPOLikeTrainerConfig(TrainerConfig):
     def get_trainer_cls(self) -> type:
         if self.use_megatron:
             from steptronoss.core.trainers.megatron_ppo_trainer import MegatronPPOTrainer
+            print(f"for debug, use MegatronPPOTrainer")
             return MegatronPPOTrainer
         else:
             from steptronoss.core.trainers.ppo_trainer import PPOTrainer
+            print(f"for debug, use PPOTrainer")
             return PPOTrainer
 
     vocab_size = Ref("..tokenizer_cfg.padded_vocab_size")

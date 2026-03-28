@@ -19,8 +19,10 @@ from steptronoss.optimizer.hparam_scheduler import Scheduler
 from steptronoss.timers import get_timers
 from steptronoss.utils import broadcast_tensors, moving_iter, print_n_params
 
+from steptronoss.core.trainers.packed_model import PackedModel
 
-class PackedModel:
+
+class Megatron_PackedModel(PackedModel):
     """
     PackedModel combines model + optimizer + scheduler into a single wrapper,
     and provides training utilities like forward_backward() and optimizer_step().

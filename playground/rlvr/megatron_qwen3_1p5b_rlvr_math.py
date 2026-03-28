@@ -344,7 +344,7 @@ class Exp(PPOLikeExp):
         self.checkpoint_cfg.critic.strict_load_model = False
         self.checkpoint_cfg.reference.load_safetensors = "/oss/opensources_model/Qwen3-1.7B/"
 
-        self.checkpoint_cfg.save_path = "/oss/checkpoints/qwen3_1p5b_rlvr_math"
+        self.checkpoint_cfg.save_path = "/oss/checkpoints/megatron_qwen3_1p5b_rlvr_math"
         self.checkpoint_cfg.save_interval = 50
 
     def entrypoint(self):

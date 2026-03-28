@@ -44,6 +44,7 @@ from steptronoss.utils.rl_utils import (  # PartialRolloutUtils,; TrajManager,; 
     RaggedPPOSampleDumper,
 )
 from steptronoss.utils.utils import get_normalizer
+from steptronoss.core.trainers.megatron_packed_model import Megatron_PackedModel
 
 GlobalMetrics: PPOMetricConfig
 
@@ -670,7 +671,7 @@ class MegatronPPOTrainer(BaseTrainer):
 
                 self.actor_iteration = state_dicts.get("iteration", 0)
 
-                self.actor = PackedModel(
+                self.actor = Megatron_PackedModel(
                     model_config=self.exp.actor_model_cfg,
                     trainer_config=self.exp.trainer_cfg,
                     grad_manager_config=self.exp.actor_grad_manager_cfg,
