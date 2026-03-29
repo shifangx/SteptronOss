@@ -78,15 +78,11 @@ class NTPTrainerConfig(TrainerConfig):
     micro_batch_size: int
     global_batch_size: int
     global_seq_length: int
-    use_megatron: bool = False
 
     def get_trainer_cls(self):
-        if self.use_megatron:
-            from steptronoss.core.trainers.megatron_lm_trainer import MegatronDecoderPretrainTrainer
-            return MegatronDecoderPretrainTrainer
-        else:
-            from steptronoss.core.trainers.lm_trainer import DecoderPretrainTrainer
-            return DecoderPretrainTrainer
+        from steptronoss.core.trainers.lm_trainer import DecoderPretrainTrainer
+
+        return DecoderPretrainTrainer
 
     def apply_loss_mask(self, losses: torch.FloatTensor, loss_mask: torch.Tensor):
         from steptronoss.core.context_parallel import scatter_to_balanced_cp_region
