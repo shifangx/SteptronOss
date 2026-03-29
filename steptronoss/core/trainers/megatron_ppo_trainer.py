@@ -74,7 +74,6 @@ from megatron.bridge.training.initialize import initialize_megatron, set_jit_fus
 from megatron.bridge.training.optim import setup_optimizer
 
 
-
 GlobalMetrics: PPOMetricConfig
 
 
@@ -141,24 +140,18 @@ class MegatronPPOTrainer(BaseTrainer):
         for hook in self._after_init_hooks:
             hook(self)
 
-    @timeit()
-    def initialize_megatron_dist(self):
-
-        # Bridge: load HF, create Megatron provider and training stack
-        bridge = AutoBridge.from_hf_pretrained(
-            hf_policy_model,
-            trust_remote_code=is_safe_repo(
-                trust_remote_code=args.trust_remote_code,
-                hf_path=hf_policy_model,
-            ),
-        )
-        provider = bridge.to_megatron_provider(load_weights=True)
-
-        cfg = build_config(provider, args)
-
-        # Initialize Megatron (requires CUDA for real training environments)
+        from steptronoss.core.trainers.megatron_bridge_runtime import build_megatron_bridge_container, init_megatron_bridge_actor
+        # Build Megatron-Bridge container   
+        bridge, cfg = build_megatron_bridge_container(self.exp)
+        print(f"for debug, bridge: {bridge}")
+        print(f"for debug, cfg: {cfg}")
+        # Initialize Megatron
         initialize_megatron(cfg=cfg)
         set_jit_fusion_options(cfg.model, cfg.train.micro_batch_size)
+        # Build Megatron-Bridge actor
+        self.megatron_bridge_actor = init_megatron_bridge_actor(bridge, cfg)
+        print(f"for debug, megatron_bridge_actor: {self.megatron_bridge_actor}")
+        print(f"for debug, megatron_bridge_actor.model_list: {self.megatron_bridge_actor.model_list}")
 
     # Functions for Training:
     def train(self):

@@ -19,29 +19,6 @@ if TYPE_CHECKING:
     from megatron.bridge.training.config import ConfigContainer
 
 
-def _resolve_hf_pretrained_path(exp) -> str:
-    """HF checkpoint directory for AutoBridge.from_hf_pretrained."""
-    cfg = exp.checkpoint_cfg
-    p = getattr(cfg.actor, "load_safetensors", None)
-    if isinstance(p, str) and p and not p.lower().endswith((".safetensors", ".bin")):
-        return p
-    if isinstance(p, str) and p:
-        return os.path.dirname(p) if os.path.isfile(p) else p
-    vllm = getattr(exp.actor_model_cfg, "vllm_cfg", None)
-    if vllm is not None and getattr(vllm, "model_config_path", None):
-        return vllm.model_config_path
-    raise ValueError(
-        "use_megatron=True requires checkpoint_cfg.actor.load_safetensors (HF dir) "
-        "or actor_model_cfg.vllm_cfg.model_config_path"
-    )
-
-
-def _trust_remote_code(exp) -> bool:
-    vllm = getattr(exp.actor_model_cfg, "vllm_cfg", None)
-    if vllm is not None and hasattr(vllm, "vllm_trust_remote_code"):
-        return bool(vllm.vllm_trust_remote_code)
-    return True
-
 
 @dataclass
 class MegatronBridgeActorBundle:
@@ -70,12 +47,9 @@ def build_megatron_bridge_container(exp) -> Any:
         TrainingConfig,
     )
 
-    hf_path = _resolve_hf_pretrained_path(exp)
-    trust_remote_code = _trust_remote_code(exp)
-
     bridge = AutoBridge.from_hf_pretrained(
-        hf_path,
-        trust_remote_code=is_safe_repo(trust_remote_code=trust_remote_code, hf_path=hf_path),
+        exp.trainer_cfg.hf_policy_model,
+        trust_remote_code=exp.trainer_cfg.trust_remote_code,
     )
     provider = bridge.to_megatron_provider(load_weights=True)
 
@@ -90,8 +64,8 @@ def build_megatron_bridge_container(exp) -> Any:
     ac = exp.actor_grad_manager_cfg.optimizer_cfg
 
     train = TrainingConfig(
-        micro_batch_size=tc.micro_batch_size,
-        global_batch_size=tc.global_batch_size,
+        micro_batch_size=tc.micro_batch_size, # TODO: need to check if this is correct
+        global_batch_size=tc.micro_batch_size,
         train_iters=tc.train_iters or 1,
     )
 
@@ -121,7 +95,7 @@ def build_megatron_bridge_container(exp) -> Any:
 
     tokenizer = TokenizerConfig(
         tokenizer_type="HuggingFaceTokenizer",
-        tokenizer_model=hf_path,
+        tokenizer_model=exp.trainer_cfg.hf_policy_model,
     )
 
     checkpoint = CheckpointConfig(
@@ -165,18 +139,19 @@ def build_megatron_bridge_container(exp) -> Any:
     return bridge, cfg
 
 
-def init_megatron_bridge_actor(exp) -> MegatronBridgeActorBundle:
+def init_megatron_bridge_actor(bridge, cfg) -> MegatronBridgeActorBundle:
     """Initialize Megatron-Core via Bridge and build actor model + optimizer (see rlhf_with_bridge.py)."""
     from megatron.core.pipeline_parallel import get_forward_backward_func
     from megatron.bridge.models.model_provider import get_model
     from megatron.bridge.training.initialize import initialize_megatron, set_jit_fusion_options
     from megatron.bridge.training.optim import setup_optimizer
 
-    bridge, cfg = build_megatron_bridge_container(exp)
+    # bridge, cfg = build_megatron_bridge_container(exp)
 
-    initialize_megatron(cfg=cfg)
-    set_jit_fusion_options(cfg.model, cfg.train.micro_batch_size)
+    # initialize_megatron(cfg=cfg)
+    # set_jit_fusion_options(cfg.model, cfg.train.micro_batch_size)
 
+    print(f"for debug, before get_model, cfg.model: {cfg.model}")
     model_list = get_model(
         cfg.model,
         cfg.ddp,

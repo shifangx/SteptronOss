@@ -333,6 +333,8 @@ class Exp(PPOLikeExp):
         super().__init__()
         self.log_dir = "/oss/logs/tensorboard_logs"
         self.trainer_cfg.use_megatron = True
+        self.trainer_cfg.hf_policy_model = "Qwen/Qwen3-1.7B"
+        self.trainer_cfg.trust_remote_code = True
 
         self.trainer_cfg.train_iters = 1000
         self.trainer_cfg.global_seq_length = 4096

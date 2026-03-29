@@ -490,6 +490,12 @@ class PPOLikeTrainerConfig(TrainerConfig):
     use_megatron: bool = False
     """If True, use Megatron PPOTrainer"""
 
+    hf_policy_model: str | None = None
+    """HuggingFace model id or local path for Megatron-Bridge ``AutoBridge.from_hf_pretrained`` when ``use_megatron`` is True."""
+
+    trust_remote_code: bool = False
+    """Passed to ``AutoBridge.from_hf_pretrained`` when loading the policy checkpoint."""
+
     def get_trainer_cls(self) -> type:
         if self.use_megatron:
             from steptronoss.core.trainers.megatron_ppo_trainer import MegatronPPOTrainer
