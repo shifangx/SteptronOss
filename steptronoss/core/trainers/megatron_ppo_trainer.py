@@ -816,7 +816,7 @@ class MegatronPPOTrainer(BaseTrainer):
         CMT.mark("after_build_actor")
 
         # Build actor with Megatron-Bridge
-        self.megatron_bridge_actor = PackedModel(self.megatron_bridge_cfg, training=True, name="megatron_bridge_actor")
+        self.megatron_bridge_actor = MegatronPackedModel(self.megatron_bridge_cfg, training=True, name="megatron_bridge_actor")
         print(f"for debug, megatron_bridge_actor: {self.megatron_bridge_actor}")
 
         with timeit("build_critic_model"):
