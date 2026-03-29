@@ -33,23 +33,121 @@ from steptronoss.exp.sft import SFTDataConfig
 DATA_ROOT_0311_UNIFIED = "/oss/data/step_sft_data/0312_rtu"
 
 
-def general_file_list_for_data_root(data_root: str) -> list:
-    """Paths under `{data_root}/general/chunk_{0..99}.json`."""
-    return [
-        DataSourceFile(f"{data_root}/general/chunk_{i}.json") for i in range(100)
+GENERAL_FILE_LIST = [
+    DataSourceFile(f"{DATA_ROOT_0311_UNIFIED}/general/{basename}")
+    for basename in [
+        "chunk_0.json",
+        "chunk_1.json",
+        "chunk_2.json",
+        "chunk_3.json",
+        "chunk_4.json",
+        "chunk_5.json",
+        "chunk_6.json",
+        "chunk_7.json",
+        "chunk_8.json",
+        "chunk_9.json",
+        "chunk_10.json",
+        "chunk_11.json",
+        "chunk_12.json",
+        "chunk_13.json",
+        "chunk_14.json",
+        "chunk_15.json",
+        "chunk_16.json",
+        "chunk_17.json",
+        "chunk_18.json",
+        "chunk_19.json",
+        "chunk_20.json",
+        "chunk_21.json",
+        "chunk_22.json",
+        "chunk_23.json",
+        "chunk_24.json",
+        "chunk_25.json",
+        "chunk_26.json",
+        "chunk_27.json",
+        "chunk_28.json",
+        "chunk_29.json",
+        "chunk_30.json",
+        "chunk_31.json",
+        "chunk_32.json",
+        "chunk_33.json",
+        "chunk_34.json",
+        "chunk_35.json",
+        "chunk_36.json",
+        "chunk_37.json",
+        "chunk_38.json",
+        "chunk_39.json",
+        "chunk_40.json",
+        "chunk_41.json",
+        "chunk_42.json",
+        "chunk_43.json",
+        "chunk_44.json",
+        "chunk_45.json",
+        "chunk_46.json",
+        "chunk_47.json",
+        "chunk_48.json",
+        "chunk_49.json",
+        "chunk_50.json",
+        "chunk_51.json",
+        "chunk_52.json",
+        "chunk_53.json",
+        "chunk_54.json",
+        "chunk_55.json",
+        "chunk_56.json",
+        "chunk_57.json",
+        "chunk_58.json",
+        "chunk_59.json",
+        "chunk_60.json",
+        "chunk_61.json",
+        "chunk_62.json",
+        "chunk_63.json",
+        "chunk_64.json",
+        "chunk_65.json",
+        "chunk_66.json",
+        "chunk_67.json",
+        "chunk_68.json",
+        "chunk_69.json",
+        "chunk_70.json",
+        "chunk_71.json",
+        "chunk_72.json",
+        "chunk_73.json",
+        "chunk_74.json",
+        "chunk_75.json",
+        "chunk_76.json",
+        "chunk_77.json",
+        "chunk_78.json",
+        "chunk_79.json",
+        "chunk_80.json",
+        "chunk_81.json",
+        "chunk_82.json",
+        "chunk_83.json",
+        "chunk_84.json",
+        "chunk_85.json",
+        "chunk_86.json",
+        "chunk_87.json",
+        "chunk_88.json",
+        "chunk_89.json",
+        "chunk_90.json",
+        "chunk_91.json",
+        "chunk_92.json",
+        "chunk_93.json",
+        "chunk_94.json",
+        "chunk_95.json",
+        "chunk_96.json",
+        "chunk_97.json",
+        "chunk_98.json",
+        "chunk_99.json",
     ]
+]
 
 
-def build_step_data_recipe_0311_unified(data_root: str) -> DataRecipe:
-    return DataRecipe(
-        domains={"general": general_file_list_for_data_root(data_root)},
-        epochs={"general": 1},
-    )
-
-
-GENERAL_FILE_LIST = general_file_list_for_data_root(DATA_ROOT_0311_UNIFIED)
-
-STEP_DATA_RECIPE0311_UNIFIED = build_step_data_recipe_0311_unified(DATA_ROOT_0311_UNIFIED)
+STEP_DATA_RECIPE0311_UNIFIED = DataRecipe(
+    domains={
+        "general": GENERAL_FILE_LIST,
+    },
+    epochs={
+        "general": 1,
+    },
+)
 
 SFT_0311_UNIFIED_RECIPE = STEP_DATA_RECIPE0311_UNIFIED
 
@@ -65,14 +163,11 @@ class Recipe0311DatasetsConfig(CompliableDatasetsConfig):
     max_seq_len: int = 128 * 1024
     """Upper bound used while compiling raw dialogs."""
 
-    data_root: str = DATA_ROOT_0311_UNIFIED
-    """Directory that contains `general/chunk_*.json` (0311 unified layout)."""
-
     tokenizer_path: str = Ref("...tokenizer_cfg.tokenizer_path")
     """Tokenizer path used by compile flow."""
 
     def get_recipe(self):
-        return build_step_data_recipe_0311_unified(self.data_root)
+        return STEP_DATA_RECIPE0311_UNIFIED
 
     def get_dataset(self, filelist, template):
         from steptronoss.data.datasets.stepchat_dataset import StepChatJsonDataset
