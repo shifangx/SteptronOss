@@ -46,6 +46,35 @@ from steptronoss.utils.rl_utils import (  # PartialRolloutUtils,; TrajManager,; 
 from steptronoss.utils.utils import get_normalizer
 from steptronoss.core.trainers.megatron_packed_model import Megatron_PackedModel
 
+# import for megatron core training
+import argparse
+import os
+from dataclasses import dataclass
+from typing import Iterable, Iterator
+
+import torch
+import torch.nn.functional as F
+from megatron.core.pipeline_parallel import get_forward_backward_func
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+
+from megatron.bridge import AutoBridge
+from megatron.bridge.models.hf_pretrained.utils import is_safe_repo
+from megatron.bridge.models.model_provider import get_model
+from megatron.bridge.training.config import (
+    CheckpointConfig,
+    ConfigContainer,
+    DistributedDataParallelConfig,
+    LoggerConfig,
+    OptimizerConfig,
+    SchedulerConfig,
+    TokenizerConfig,
+    TrainingConfig,
+)
+from megatron.bridge.training.initialize import initialize_megatron, set_jit_fusion_options
+from megatron.bridge.training.optim import setup_optimizer
+
+
+
 GlobalMetrics: PPOMetricConfig
 
 
@@ -111,6 +140,25 @@ class MegatronPPOTrainer(BaseTrainer):
 
         for hook in self._after_init_hooks:
             hook(self)
+
+    @timeit()
+    def initialize_megatron_dist(self):
+
+        # Bridge: load HF, create Megatron provider and training stack
+        bridge = AutoBridge.from_hf_pretrained(
+            hf_policy_model,
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=args.trust_remote_code,
+                hf_path=hf_policy_model,
+            ),
+        )
+        provider = bridge.to_megatron_provider(load_weights=True)
+
+        cfg = build_config(provider, args)
+
+        # Initialize Megatron (requires CUDA for real training environments)
+        initialize_megatron(cfg=cfg)
+        set_jit_fusion_options(cfg.model, cfg.train.micro_batch_size)
 
     # Functions for Training:
     def train(self):
