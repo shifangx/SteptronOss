@@ -19,10 +19,14 @@ from steptronoss.optimizer.hparam_scheduler import Scheduler
 from steptronoss.timers import get_timers
 from steptronoss.utils import broadcast_tensors, moving_iter, print_n_params
 
-from steptronoss.core.trainers.packed_model import PackedModel
+from megatron.bridge.training.config import ConfigContainer
+from megatron.core.pipeline_parallel import get_forward_backward_func
+from megatron.bridge.models.model_provider import get_model
+from megatron.bridge.training.initialize import initialize_megatron, set_jit_fusion_options
+from megatron.bridge.training.optim import setup_optimizer
 
 
-class Megatron_PackedModel(PackedModel):
+class MegatronPackedModel:
     """
     PackedModel combines model + optimizer + scheduler into a single wrapper,
     and provides training utilities like forward_backward() and optimizer_step().
@@ -44,76 +48,38 @@ class Megatron_PackedModel(PackedModel):
 
     def __init__(
         self,
-        trainer_config: NTPTrainerConfig,
-        model_config: Megatron3DParallelModelConfig,
-        grad_manager_config: GradientManagerConfig = None,
-        scheduler_config: SchedulerConfig = None,
+        cfg: ConfigContainer,
         training=False,
-        state_dicts={},
-        strict_load_model=False,
-        name="packed_model",
+        name="megatron_packed_model",
     ) -> None:
         self.name = name
         self.training = training
-        self.model_config = model_config
-        self.trainer_config = trainer_config
-        self.scheduler_config = scheduler_config
-        self.models: torch.nn.ModuleList = self.setup_model(model_config)
-        if "model" in state_dicts:
-            load_model_checkpoint(
-                self.models,
-                state_dicts,
-                strict_load_model=strict_load_model,
-            )
 
         self._offloaded = {
             "params": False,
             "grad_buffer": False,
             "optimizer_state": False,
         }
-        if training:
-            self.grad_manager: GradientManager = grad_manager_config.build_gradient_manager(self.models)
-            if "optimizer" in state_dicts:
-                self.grad_manager.load_state_dict(state_dicts["optimizer"])
 
-            self.scheduler: Scheduler = scheduler_config.build_scheduler(self.grad_manager.optimizer)
-            if "scheduler" in state_dicts:
-                self.scheduler.load_state_dict(state_dicts["scheduler"])
-
-    def setup_model(self, model_config: Megatron3DParallelModelConfig) -> torch.nn.ModuleList:
-        """Build the model by calling the build_model func in exp file."""
-
-        # Build model.
-        vp_size = get_vpp_size()
-        model: list[torch.nn.Module] = []
-        for i in range(vp_size):
-            set_vpp_rank(i)
-            # Set pre_process and post_process only after virtual rank is set.
-            model_chunk = model_config.build_model()
-            if self.trainer_config.log_detailed_grad_norms and hasattr(model_chunk, "name_parameters"):
-                model_chunk.name_parameters()
-            model.append(model_chunk)
-
-        # Set tensor model parallel attributes if not set.
-        # Only parameters that are already tensor model parallel have these
-        # attributes set for them. We should make sure the default attributes
-        # are set for all params so the optimizer can use them.
-        for model_module in model:
-            for param in model_module.parameters():
-                tensor_parallel.set_defaults_if_not_set_tensor_model_parallel_attributes(param)
-
-        print_n_params(model)
-
-        # Fp16 conversion.
-        if model_config.params_dtype in [torch.float16, torch.bfloat16]:
-            model = [Float16Module(model_module, model_config.params_dtype) for model_module in model]
-
-        model = torch.nn.ModuleList(model)
-
-        # GPU allocation.
-        model.cuda(torch.cuda.current_device())
-
-        return model
+        print(f"for debug, before get_model, cfg.model: {cfg.model}")
+        self.models = get_model(
+            cfg.model,
+            cfg.ddp,
+            overlap_param_gather_with_optimizer_step=False,
+            use_torch_fsdp2=cfg.dist.use_torch_fsdp2,
+            data_parallel_random_init=cfg.rng.data_parallel_random_init,
+        )
+        if self.training:
+            self.optimizer, self.scheduler = setup_optimizer(
+                optimizer_config=cfg.optimizer,
+                scheduler_config=cfg.scheduler,
+                model=self.models,
+                use_gloo_process_groups=cfg.dist.use_gloo_process_groups,
+            )
+        else:
+            self.optimizer = None
+            self.scheduler = None
+        self.forward_backward = get_forward_backward_func()
 
     def _offload_param(self, non_blocking=True):
         if self._offloaded["params"]:

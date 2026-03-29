@@ -44,7 +44,7 @@ from steptronoss.utils.rl_utils import (  # PartialRolloutUtils,; TrajManager,; 
     RaggedPPOSampleDumper,
 )
 from steptronoss.utils.utils import get_normalizer
-from steptronoss.core.trainers.megatron_packed_model import Megatron_PackedModel
+from steptronoss.core.trainers.megatron_packed_model import MegatronPackedModel
 
 # import for megatron core training
 import argparse
@@ -75,6 +75,99 @@ from megatron.bridge.training.optim import setup_optimizer
 
 
 GlobalMetrics: PPOMetricConfig
+
+def build_megatron_bridge_container(exp) -> ConfigContainer:
+    """Build ``ConfigContainer`` for Megatron-Bridge from a Steptron PPO experiment."""
+    bridge = AutoBridge.from_hf_pretrained(
+        exp.trainer_cfg.hf_policy_model,
+        trust_remote_code=exp.trainer_cfg.trust_remote_code,
+    )
+    provider = bridge.to_megatron_provider(load_weights=True)
+
+    pc = exp.actor_model_cfg.parallel_cfg
+    provider.tensor_model_parallel_size = pc.tensor_model_parallel_size
+    provider.pipeline_model_parallel_size = pc.pipeline_model_parallel_size
+    provider.context_parallel_size = pc.context_parallel_size
+    provider.seq_length = exp.trainer_cfg.global_seq_length
+    provider.finalize()
+
+    tc = exp.trainer_cfg
+    ac = exp.actor_grad_manager_cfg.optimizer_cfg
+
+    train = TrainingConfig(
+        micro_batch_size=tc.micro_batch_size, # TODO: need to check if this is correct
+        global_batch_size=tc.micro_batch_size,
+        train_iters=tc.train_iters or 1,
+    )
+
+    optimizer = OptimizerConfig(
+        optimizer="adam",
+        lr=float(ac.lr),
+        min_lr=float(ac.lr),
+        weight_decay=float(getattr(ac, "weight_decay", 0.0)),
+        adam_beta1=0.9,
+        adam_beta2=0.95,
+        use_distributed_optimizer=False,
+        bf16=getattr(exp.actor_model_cfg, "params_dtype", torch.bfloat16) == torch.bfloat16,
+    )
+
+    sched = exp.actor_scheduler_cfg
+    lr_decay_iters = getattr(sched, "total_schedule", None) or tc.train_iters or 1
+    scheduler = SchedulerConfig(
+        lr_decay_style="constant",
+        lr_warmup_iters=0,
+        start_weight_decay=0.033,
+        end_weight_decay=0.033,
+        lr_decay_iters=lr_decay_iters,
+        override_opt_param_scheduler=True,
+    )
+
+    ddp = DistributedDataParallelConfig()
+
+    tokenizer = TokenizerConfig(
+        tokenizer_type="HuggingFaceTokenizer",
+        tokenizer_model=exp.trainer_cfg.hf_policy_model,
+    )
+
+    checkpoint = CheckpointConfig(
+        save_interval=0,
+        save=None,
+        load=None,
+        async_save=False,
+        fully_parallel_save=False,
+        fully_parallel_load=False,
+    )
+
+    logger_cfg = LoggerConfig()
+
+    try:
+        cfg = ConfigContainer(
+            model=provider,
+            train=train,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            ddp=ddp,
+            tokenizer=tokenizer,
+            checkpoint=checkpoint,
+            logger=logger_cfg,
+            dataset=None,  # type: ignore[arg-type]
+        )
+    except TypeError:
+        from megatron.bridge.training.config import FinetuningDatasetConfig
+
+        cfg = ConfigContainer(
+            model=provider,
+            train=train,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            ddp=ddp,
+            tokenizer=tokenizer,
+            checkpoint=checkpoint,
+            logger=logger_cfg,
+            dataset=FinetuningDatasetConfig(seq_length=exp.trainer_cfg.global_seq_length),
+        )
+    cfg.validate()
+    return cfg
 
 
 class TrainerPromptStream(Nextable):
@@ -140,14 +233,12 @@ class MegatronPPOTrainer(BaseTrainer):
         for hook in self._after_init_hooks:
             hook(self)
 
-        from steptronoss.core.trainers.megatron_bridge_runtime import build_megatron_bridge_container
         # Build Megatron-Bridge container   
-        self.bridge, self.cfg = build_megatron_bridge_container(self.exp)
-        print(f"for debug, bridge: {self.bridge}")
-        print(f"for debug, cfg: {self.cfg}")
+        self.megatron_bridge_cfg = build_megatron_bridge_container(self.exp)
+        print(f"for debug, megatron_bridge_cfg: {self.megatron_bridge_cfg}")
         # Initialize Megatron
-        initialize_megatron(cfg=self.cfg)
-        set_jit_fusion_options(self.cfg.model, self.cfg.train.micro_batch_size)
+        initialize_megatron(cfg=self.megatron_bridge_cfg)
+        set_jit_fusion_options(self.megatron_bridge_cfg.model, self.megatron_bridge_cfg.train.micro_batch_size)
 
 
     # Functions for Training:
@@ -709,7 +800,7 @@ class MegatronPPOTrainer(BaseTrainer):
 
                 self.actor_iteration = state_dicts.get("iteration", 0)
 
-                self.actor = Megatron_PackedModel(
+                self.actor = PackedModel(
                     model_config=self.exp.actor_model_cfg,
                     trainer_config=self.exp.trainer_cfg,
                     grad_manager_config=self.exp.actor_grad_manager_cfg,
@@ -724,11 +815,9 @@ class MegatronPPOTrainer(BaseTrainer):
             self.actor.offload_state()
         CMT.mark("after_build_actor")
 
-        # Build Megatron-Bridge actor
-        from steptronoss.core.trainers.megatron_bridge_runtime import init_megatron_bridge_actor
-        self.megatron_bridge_actor = init_megatron_bridge_actor(self.bridge, self.cfg)
+        # Build actor with Megatron-Bridge
+        self.megatron_bridge_actor = PackedModel(self.megatron_bridge_cfg, training=True, name="megatron_bridge_actor")
         print(f"for debug, megatron_bridge_actor: {self.megatron_bridge_actor}")
-        print(f"for debug, megatron_bridge_actor.model_list: {self.megatron_bridge_actor.model_list}")
 
         with timeit("build_critic_model"):
             if self.exp.critic_model_cfg is not None:
