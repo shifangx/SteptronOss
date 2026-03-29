@@ -11,6 +11,8 @@ How to use:
   `.compile(COMPILED_ROOT_0311_UNIFIED_QWEN_TOKENIZER)`
 - or run:
   `python3 <this_file> --tokenizer-path /path/to/hf_tokenizer`
+  add `--data-root /path/to/parent_of_general` if raw json is not under the
+  default `/oss/data/step_sft_data/0312_rtu`
 - then use:
   import `Recipe0311QwenCompiledSFTDataConfig` in experiments for training on
   the compiled shards
@@ -64,8 +66,19 @@ if __name__ == "__main__":
         required=True,
         help="HF tokenizer path. It should match the tokenizer used by the target experiment.",
     )
+    parser.add_argument(
+        "--data-root",
+        default=None,
+        help=(
+            "Raw json root: must contain general/chunk_0.json … chunk_99.json. "
+            "Default: DATA_ROOT_0311_UNIFIED in step_sft_data_config0311 "
+            "(often /oss/...; override when data is mirrored elsewhere)."
+        ),
+    )
     args = parser.parse_args()
 
     data_cfg = Recipe0311DatasetsConfig()
     data_cfg.tokenizer_path = args.tokenizer_path
+    if args.data_root is not None:
+        data_cfg.data_root = args.data_root
     data_cfg.compile(COMPILED_ROOT_0311_UNIFIED_QWEN_TOKENIZER)
