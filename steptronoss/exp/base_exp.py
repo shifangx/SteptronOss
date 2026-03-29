@@ -352,10 +352,10 @@ class ParallelConfig(AbstractParallelConfig):
         moe_model_parallel_size = (
             self.pipeline_model_parallel_size * self.expert_tensor_parallel_size * self.expert_model_parallel_size
         )
-        assert world_size >= attn_model_parallel_size, f"world_size: {world_size} < attn_model_parallel_size: {attn_model_parallel_size}"
-        assert world_size % attn_model_parallel_size == 0, f"world_size: {world_size} % attn_model_parallel_size: {attn_model_parallel_size} != 0"
-        assert world_size >= moe_model_parallel_size, f"world_size: {world_size} < moe_model_parallel_size: {moe_model_parallel_size}"
-        assert world_size % moe_model_parallel_size == 0, f"world_size: {world_size} % moe_model_parallel_size: {moe_model_parallel_size} != 0"
+        assert world_size >= attn_model_parallel_size
+        assert world_size % attn_model_parallel_size == 0
+        assert world_size >= moe_model_parallel_size
+        assert world_size % moe_model_parallel_size == 0
 
 
 class MegatronTPConfig(AbstractModelConfig):
