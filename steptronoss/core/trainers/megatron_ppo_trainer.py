@@ -140,18 +140,15 @@ class MegatronPPOTrainer(BaseTrainer):
         for hook in self._after_init_hooks:
             hook(self)
 
-        from steptronoss.core.trainers.megatron_bridge_runtime import build_megatron_bridge_container, init_megatron_bridge_actor
+        from steptronoss.core.trainers.megatron_bridge_runtime import build_megatron_bridge_container
         # Build Megatron-Bridge container   
-        bridge, cfg = build_megatron_bridge_container(self.exp)
-        print(f"for debug, bridge: {bridge}")
-        print(f"for debug, cfg: {cfg}")
+        self.bridge, self.cfg = build_megatron_bridge_container(self.exp)
+        print(f"for debug, bridge: {self.bridge}")
+        print(f"for debug, cfg: {self.cfg}")
         # Initialize Megatron
-        initialize_megatron(cfg=cfg)
-        set_jit_fusion_options(cfg.model, cfg.train.micro_batch_size)
-        # Build Megatron-Bridge actor
-        self.megatron_bridge_actor = init_megatron_bridge_actor(bridge, cfg)
-        print(f"for debug, megatron_bridge_actor: {self.megatron_bridge_actor}")
-        print(f"for debug, megatron_bridge_actor.model_list: {self.megatron_bridge_actor.model_list}")
+        initialize_megatron(cfg=self.cfg)
+        set_jit_fusion_options(self.cfg.model, self.cfg.train.micro_batch_size)
+
 
     # Functions for Training:
     def train(self):
@@ -726,6 +723,12 @@ class MegatronPPOTrainer(BaseTrainer):
 
             self.actor.offload_state()
         CMT.mark("after_build_actor")
+
+        # Build Megatron-Bridge actor
+        from steptronoss.core.trainers.megatron_bridge_runtime import init_megatron_bridge_actor
+        self.megatron_bridge_actor = init_megatron_bridge_actor(self.bridge, self.cfg)
+        print(f"for debug, megatron_bridge_actor: {self.megatron_bridge_actor}")
+        print(f"for debug, megatron_bridge_actor.model_list: {self.megatron_bridge_actor.model_list}")
 
         with timeit("build_critic_model"):
             if self.exp.critic_model_cfg is not None:
