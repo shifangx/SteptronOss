@@ -749,6 +749,17 @@ class MegatronPPOTrainer(BaseTrainer):
                         non_blocking_offload=True,
                         offload_data=self.ppo_cfg.offload_data,
                     )
+                    print(f"for debug, before megatron_bridge_actor.forward_backward,")
+                    self.megatron_bridge_actor.forward_backward(
+                        data_list=self.make_div_pp(iter_data),
+                        data_proc_fn=self.ppo_cfg.preprocess_generated,
+                        loss_fn=self.ppo_cfg.actor_loss_func,
+                        training=self.actor_iteration >= self.ppo_cfg.critic_warmup_iters,
+                        offload_opt_while_forward=self.ppo_cfg.offload_optimizer_state,
+                        non_blocking_offload=True,
+                        offload_data=self.ppo_cfg.offload_data,
+                    )
+                    print(f"for debug, after megatron_bridge_actor.forward_backward")
 
                     if self.actor_iteration >= self.ppo_cfg.critic_warmup_iters:
                         (
