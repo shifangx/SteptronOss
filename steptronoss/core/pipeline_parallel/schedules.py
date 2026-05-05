@@ -178,6 +178,31 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             print(f"[ALIGN] intermediate {name}: {tensor}", flush=True)
             if name == "embedding":
                 _print_embedding_debug_info(_module, tensor)
+                word_emb = getattr(_module, "word_embeddings", None)
+                if word_emb is not None and hasattr(word_emb, "weight"):
+                    w_path = os.path.join(save_dir, "embedding_weight.pt")
+                    if not os.path.exists(w_path):
+                        w = word_emb.weight.data.detach().cpu()
+                        torch.save(w, w_path)
+                        wf = w.float()
+                        print(f"[ALIGN] embedding_weight saved: shape={tuple(w.shape)}, dtype={w.dtype}", flush=True)
+                        print(f"[ALIGN] embedding_weight stats: min={wf.min():.6f}  max={wf.max():.6f}  mean={wf.mean():.6f}  std={wf.std():.6f}", flush=True)
+                        print(f"[ALIGN] embedding_weight: {w}", flush=True)
+
+        return hook
+
+    def make_input_hook(name: str):
+        path = os.path.join(save_dir, f"{name}.pt")
+
+        def hook(_module, inp, _out):
+            if os.path.exists(path) or not inp:
+                return
+            tensor = inp[0]
+            if not isinstance(tensor, torch.Tensor):
+                return
+            torch.save(tensor.detach().cpu(), path)
+            print(f"[ALIGN] input saved {name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}", flush=True)
+            print(f"[ALIGN] input {name}: {tensor}", flush=True)
 
         return hook
 
@@ -186,6 +211,9 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
 
     if hasattr(base_model, "tok_embeddings"):
         hooks.append(base_model.tok_embeddings.register_forward_hook(make_hook("embedding")))
+        if hasattr(base_model.tok_embeddings, "word_embeddings"):
+            hooks.append(base_model.tok_embeddings.word_embeddings.register_forward_hook(
+                make_input_hook("embedding_input_ids")))
 
     if hasattr(base_model, "layers"):
         for block in base_model.layers:

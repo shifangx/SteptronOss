@@ -333,6 +333,7 @@ class DecoderPretrainTrainer(BaseTrainer):
             set_vpp_rank(i)
             # Set pre_process and post_process only after virtual rank is set.
             model_chunk = model_config.build_model()
+            print(f"[MODEL] vp_rank={i}:\n{model_chunk}", flush=True)
             if self.exp.trainer_cfg.log_detailed_grad_norms and hasattr(model_chunk, "name_parameters"):
                 model_chunk.name_parameters()
             model.append(model_chunk)
