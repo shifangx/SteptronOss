@@ -196,8 +196,41 @@ class FWBWScheduler:
         data["loss_scale"] = loss_scale
         data["mtp_loss_scale"] = loss_scale
 
+        # ===== ALIGNMENT: save input batch (PP first stage only, triggered by env var) =====
+        import os as _align_os
+        _align_batch_path = _align_os.environ.get("STEPTRON_SAVE_BATCH_PATH", "")
+        if _align_batch_path and not _align_os.path.exists(_align_batch_path) and "input_ids" in data:
+            _align_save = {
+                k: v.detach().cpu() if isinstance(v, torch.Tensor) else v
+                for k, v in data.items()
+                if v is not None and k not in ("loss_scale", "mtp_loss_scale")
+            }
+            torch.save(_align_save, _align_batch_path)
+            print(
+                f"[ALIGN] SteptronOss input batch saved to {_align_batch_path}: "
+                + str({k: tuple(v.shape) for k, v in _align_save.items() if isinstance(v, torch.Tensor)}),
+                flush=True,
+            )
+        # ===== END ALIGNMENT =====
+
         with get_timers().record("forward-step", log_level=2):
             output = model(**data)
+
+        # ===== ALIGNMENT: save model output logits (PP last stage only, triggered by env var) =====
+        _align_output_path = _align_os.environ.get("STEPTRON_SAVE_OUTPUT_PATH", "")
+        if (
+            _align_output_path
+            and not _align_os.path.exists(_align_output_path)
+            and isinstance(output, torch.Tensor)
+            and is_pipeline_last_stage()
+        ):
+            torch.save(output.detach().cpu(), _align_output_path)
+            print(
+                f"[ALIGN] SteptronOss model output saved to {_align_output_path}: "
+                f"shape={tuple(output.shape)}, dtype={output.dtype}",
+                flush=True,
+            )
+        # ===== END ALIGNMENT =====
 
         # logger.info(f"forward-step [{vp_rank}] {get_mem_brief()}")
 
