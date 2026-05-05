@@ -168,6 +168,8 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         path = os.path.join(save_dir, f"{name}.pt")
 
         def hook(_module, _inp, out):
+            if PM.world_rank != 0:
+                return
             if os.path.exists(path):
                 return
             tensor = out[0] if isinstance(out, (tuple, list)) else out
@@ -195,6 +197,8 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         path = os.path.join(save_dir, f"{name}.pt")
 
         def hook(_module, inp, _out):
+            if PM.world_rank != 0:
+                return
             if os.path.exists(path) or not inp:
                 return
             tensor = inp[0]

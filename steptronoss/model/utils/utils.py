@@ -91,6 +91,7 @@ def load_model_checkpoint(models, state_dict, strict_load_model=True):
             for name, param in model.named_parameters():
                 if strict_load_model or name not in missing_keys_set:
                     param.has_initialized = True
+    print(f"finish loading model checkpoint", flush=True)
 
 
 class AuxLossBackwardHook(torch.autograd.Function):

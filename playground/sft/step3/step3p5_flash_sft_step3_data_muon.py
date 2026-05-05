@@ -171,8 +171,8 @@ class Step3p5FlashModelConfigBalanced(Step3p5FlashModelConfig):
         
         # hard code for debug with less num_layers
         # lengths = [2] * (PM.size_of("PP") * get_vpp_size())
-        lengths = [6] * (PM.size_of("PP") * get_vpp_size())
-        # lengths = [45] * (PM.size_of("PP") * get_vpp_size())
+        # lengths = [6] * (PM.size_of("PP") * get_vpp_size())
+        lengths = [45] * (PM.size_of("PP") * get_vpp_size())
         if len(lengths) >= 24:
             lengths[22] = 1  # PP6/vp2
             lengths[23] = 0  # PP7/vp2
