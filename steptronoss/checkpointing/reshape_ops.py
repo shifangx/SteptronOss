@@ -451,7 +451,7 @@ class FFNMergeGateUp(ReshapeOp):
         gate = piece[kgate].chunk(PM.size_of(self.group), -2)[PM.rank_in(self.group)]
         up = piece[kup].chunk(PM.size_of(self.group), -2)[PM.rank_in(self.group)]
         w1 = torch.cat([gate, up], dim=-2)
-        print(f"for debug, in FFNMergeGateUp forward, piece.keys():{piece.keys()}", flush=True)
+        print(f"for debug, rank:{PM.rank_in(self.group)}, in FFNMergeGateUp forward, piece.keys():{piece.keys()}, w1.shape:{w1.shape}\n", flush=True)
         return {
             common_pattern(piece.keys()).format("gate_up"): [
                 w1 if i == PM.rank_in(self.group) else None for i in range(PM.size_of(self.group))
