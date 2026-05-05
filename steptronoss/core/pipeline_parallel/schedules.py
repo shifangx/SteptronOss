@@ -124,6 +124,86 @@ def backward_step(input_tensor, output_tensor, output_tensor_grad):
     return input_tensor_grad
 
 
+def _print_embedding_debug_info(module, tensor: torch.Tensor) -> None:
+    """打印 embedding 模块的详细诊断信息，用于排查两侧 embedding 不对齐的原因。"""
+    print("[ALIGN] ========== Embedding Debug Info (SteptronOss) ==========", flush=True)
+    print(f"[ALIGN] module type                : {type(module).__name__}", flush=True)
+
+    # 从 module 直接读取配置属性
+    for attr in [
+        "hidden_size", "embedding_weights_in_fp32", "params_dtype",
+        "fp32_residual_connection", "sequence_parallel",
+    ]:
+        print(f"[ALIGN]   {attr:<40}: {getattr(module, attr, 'N/A')}", flush=True)
+
+    # word_embeddings 权重统计
+    word_emb = getattr(module, "word_embeddings", None)
+    if word_emb is not None and hasattr(word_emb, "weight"):
+        w = word_emb.weight.data.detach().float()
+        print(f"[ALIGN]   word_embeddings.weight shape  : {tuple(word_emb.weight.shape)}", flush=True)
+        print(f"[ALIGN]   word_embeddings.weight dtype  : {word_emb.weight.dtype}", flush=True)
+        print(f"[ALIGN]   word_embeddings.weight stats  : min={w.min():.6f}  max={w.max():.6f}  mean={w.mean():.6f}  std={w.std():.6f}", flush=True)
+
+    # 输出张量统计
+    t = tensor.detach().float()
+    print(f"[ALIGN]   output shape                 : {tuple(tensor.shape)}", flush=True)
+    print(f"[ALIGN]   output dtype                 : {tensor.dtype}", flush=True)
+    print(f"[ALIGN]   output stats                 : min={t.min():.6f}  max={t.max():.6f}  mean={t.mean():.6f}  std={t.std():.6f}", flush=True)
+    print(f"[ALIGN]   output has_nan                : {torch.isnan(t).any().item()}  has_inf: {torch.isinf(t).any().item()}", flush=True)
+    print("[ALIGN] =============================================================", flush=True)
+
+
+def _build_intermediate_hooks(model, save_dir: str) -> list:
+    """Register forward hooks to capture intermediate activations for layer-by-layer alignment.
+
+    Saves per-layer: embedding output, each layer's attention output (pre-residual),
+    each layer's feed_forward output (pre-residual). Tensors are in SteptronOss layout [B, S, H].
+    Triggered by env var STEPTRON_SAVE_INTERMEDIATE_PATH pointing to an output directory.
+    """
+    import os
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    def make_hook(name: str):
+        path = os.path.join(save_dir, f"{name}.pt")
+
+        def hook(_module, _inp, out):
+            if os.path.exists(path):
+                return
+            tensor = out[0] if isinstance(out, (tuple, list)) else out
+            if not isinstance(tensor, torch.Tensor):
+                return
+            torch.save(tensor.detach().cpu(), path)
+            print(f"[ALIGN] intermediate saved {name}: shape={tuple(tensor.shape)}", flush=True)
+            print(f"[ALIGN] intermediate {name}: {tensor}", flush=True)
+            if name == "embedding":
+                _print_embedding_debug_info(_module, tensor)
+
+        return hook
+
+    base_model = unwrap_model(model)
+    hooks = []
+
+    if hasattr(base_model, "tok_embeddings"):
+        hooks.append(base_model.tok_embeddings.register_forward_hook(make_hook("embedding")))
+
+    if hasattr(base_model, "layers"):
+        for block in base_model.layers:
+            if getattr(block, "is_noop", False):
+                continue
+            layer_id = getattr(block, "layer_id", None)
+            if layer_id is None:
+                continue
+            if hasattr(block, "attention"):
+                hooks.append(block.attention.register_forward_hook(
+                    make_hook(f"layer_{layer_id:03d}_attention")))
+            if hasattr(block, "feed_forward"):
+                hooks.append(block.feed_forward.register_forward_hook(
+                    make_hook(f"layer_{layer_id:03d}_ffn")))
+
+    return hooks
+
+
 class FWBWScheduler:
     def __init__(self, config: MegatronPPModelConfig) -> None:
         self.config = config
@@ -199,6 +279,7 @@ class FWBWScheduler:
         # ===== ALIGNMENT: save input batch (PP first stage only, triggered by env var) =====
         import os as _align_os
         _align_batch_path = _align_os.environ.get("STEPTRON_SAVE_BATCH_PATH", "")
+        print(f"[ALIGN] _align_batch_path: {_align_batch_path}")
         if _align_batch_path and not _align_os.path.exists(_align_batch_path) and "input_ids" in data:
             _align_save = {
                 k: v.detach().cpu() if isinstance(v, torch.Tensor) else v
@@ -213,11 +294,23 @@ class FWBWScheduler:
             )
         # ===== END ALIGNMENT =====
 
+        # ===== ALIGNMENT: register intermediate activation hooks =====
+        _align_intermediate_dir = _align_os.environ.get("STEPTRON_SAVE_INTERMEDIATE_PATH", "")
+        _ihooks = _build_intermediate_hooks(model, _align_intermediate_dir) if _align_intermediate_dir else []
+        # ===== END ALIGNMENT =====
+
         with get_timers().record("forward-step", log_level=2):
             output = model(**data)
 
+        # ===== ALIGNMENT: remove intermediate hooks =====
+        for _h in _ihooks:
+            _h.remove()
+        # ===== END ALIGNMENT =====
+
         # ===== ALIGNMENT: save model output logits (PP last stage only, triggered by env var) =====
         _align_output_path = _align_os.environ.get("STEPTRON_SAVE_OUTPUT_PATH", "")
+        print(f"[ALIGN] _align_output_path: {_align_output_path}")
+        print(f"[ALIGN] _align_logits: {output}")    
         if (
             _align_output_path
             and not _align_os.path.exists(_align_output_path)
