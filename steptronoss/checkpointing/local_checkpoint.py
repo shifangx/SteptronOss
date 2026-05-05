@@ -200,12 +200,14 @@ class Checkpointer:
 
         # Save safetensors if configured
         if cfg.save_safetensors:
+            logger.info(f"[dump_ckpt] start dump_safetensors to {join(path_with_subname, 'hf')}", at=0)
             dump_safetensors(
                 save_path=join(path_with_subname, "hf"),
                 model_reference_path=cfg.model_config_path,
                 tokenizer_reference_path=cfg.tokenizer_path,
                 models=model,
             )
+            logger.info("[dump_ckpt] dump_safetensors done", at=0)
 
         file_dicts = self.make_ckpt(
             cfg=cfg,

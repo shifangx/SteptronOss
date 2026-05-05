@@ -56,7 +56,7 @@ class Step3p5Block(TransformerBlock):
             sequence_parallel=cfg.tp_cfg.sequence_parallel,
             use_zero_init=cfg.rms_norm_zero_gamma,
         )
-
+        print(f"for debug, layer_id: {self.layer_id}, swa_layer_list: {cfg.swa_layer_list}")
         if cfg.swa_layer_list[self.layer_id]:
             self.attention = cfg.swa_cfg.build_model(layer_id=layer_id)
         else:

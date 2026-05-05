@@ -91,10 +91,13 @@ def dump_safetensors(
 
     # save safetensors
     total_size, weight_map = 0, {}
+    n_vp = len(models)
     for vp_rank, model in enumerate(models):
+        logger.info(f"[dump_safetensors] vp {vp_rank}/{n_vp}: cuda sync + hf_state_dict ...", at=0)
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
         weight: dict = unwrap_model(model).hf_state_dict()
+        logger.info(f"[dump_safetensors] vp {vp_rank}/{n_vp}: hf_state_dict done, {len(weight)} tensors", at=0)
         if PM.i_am("DP", 0) and PM.i_am("TP", 0):
             chunk_id = vp_rank * PM.size_of("PP") + PM.rank_in("PP")
             file_path = f"model-{chunk_id + 1:05d}.safetensors"
@@ -102,7 +105,10 @@ def dump_safetensors(
                 weight_map[k] = file_path
                 total_size += v.numel() * v.dtype.itemsize
             full_path = join(save_path, file_path)
+            size_gb = total_size / 1024**3
+            logger.info(f"[dump_safetensors] vp {vp_rank}/{n_vp}: writing {file_path} ({size_gb:.2f} GB so far) ...", at=0)
             save_file(weight, full_path)
+            logger.info(f"[dump_safetensors] vp {vp_rank}/{n_vp}: wrote {file_path}", at=0)
         for k in list(weight):
             del weight[k]
     weight_map = all_gather_object(weight_map, group=PM.group_of("PP"))
