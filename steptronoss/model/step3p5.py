@@ -10,7 +10,7 @@ from steptronoss.model.decoder_model import (
     NoopTransformerBlock,
     TransformerBlock,
 )
-
+import torch
 
 class Step3p5ModelConfig(DecoderLLMConfig):
     swa_cfg: AttentionConfig
@@ -56,7 +56,7 @@ class Step3p5Block(TransformerBlock):
             sequence_parallel=cfg.tp_cfg.sequence_parallel,
             use_zero_init=cfg.rms_norm_zero_gamma,
         )
-        print(f"for debug, layer_id: {self.layer_id}, swa_layer_list: {cfg.swa_layer_list}")
+        print(f"for debug, rank: {torch.distributed.get_rank()}, layer_id: {self.layer_id}, len(swa_layer_list): {len(cfg.swa_layer_list)}")
         if cfg.swa_layer_list[self.layer_id]:
             self.attention = cfg.swa_cfg.build_model(layer_id=layer_id)
         else:

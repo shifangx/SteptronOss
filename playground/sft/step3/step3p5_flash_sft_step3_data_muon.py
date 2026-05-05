@@ -119,7 +119,7 @@ from steptronoss.core.parallel_state import PM, get_vpp_size
 from steptronoss.exp.base_exp import GradientManagerConfig
 from steptronoss.exp.ntp import MoePretrainMetricConfig
 from steptronoss.exp.resources import TorchrunResourceConfig
-
+import torch
 
 class Step3F128kSFTResourceConfig(TorchrunResourceConfig):
     def __init__(self):
@@ -144,14 +144,14 @@ class EmbedOnlyGradientManagerConfig(GradientManagerConfig):
         total, frozen = 0, 0
         for name, param in model.named_parameters():
             total += 1
-            if "tok_embeddings" in name or "out_embeddings" in name:
+            if "tok_embeddings" in name or "out_embeddings" in name or "ffn_norm" in name:
                 param.requires_grad_(True)
-                print(f"[train] will train {name}", flush=True)
+                print(f"[train] rank {torch.distributed.get_rank()} will train {name}, shape: {param.shape}", flush=True)
             else:
                 param.requires_grad_(False)
                 frozen += 1
-                print(f"[freeze] will freeze {name}", flush=True)
-        print(f"[freeze] frozen {frozen}/{total} params, training only embeddings", flush=True)
+                print(f"[freeze] rank {torch.distributed.get_rank()} will freeze {name}, shape: {param.shape}", flush=True)
+        print(f"[freeze] frozen {frozen}/{total} params", flush=True)
         return super().build_gradient_manager(model)
 
 
@@ -169,13 +169,19 @@ class Step3p5FlashModelConfigBalanced(Step3p5FlashModelConfig):
         # PP=8, VPP=3 -> 24 slots. Start from 2 layers/slot and drop 1 layer on
         # a few slots to get 45 layers total, while keeping PP7 off the floor.
         
-        # hard code for debug with less num_layers
+        # # # num_layers = 45, pp=8, vpp=3
         # lengths = [2] * (PM.size_of("PP") * get_vpp_size())
-        # lengths = [6] * (PM.size_of("PP") * get_vpp_size())
-        lengths = [45] * (PM.size_of("PP") * get_vpp_size())
-        if len(lengths) >= 24:
-            lengths[22] = 1  # PP6/vp2
-            lengths[23] = 0  # PP7/vp2
+        # lengths[22] = 1  # PP6/vp2
+        # lengths[23] = 0  # PP7/vp2
+        
+        # lengths = [1] * (PM.size_of("PP") * get_vpp_size())
+        # lengths = [20] * (PM.size_of("PP") * get_vpp_size())
+        # lengths = [45] * (PM.size_of("PP") * get_vpp_size())
+
+        # num_layers = 45, pp=8, vpp=1
+        lengths = [6] * (PM.size_of("PP") * get_vpp_size())
+        lengths[6] = 5  # PP6
+        lengths[7] = 4  # PP7
 
         expected = PM.size_of("PP") * get_vpp_size()
         if len(lengths) != expected:
