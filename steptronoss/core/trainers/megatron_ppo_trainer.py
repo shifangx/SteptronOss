@@ -604,6 +604,21 @@ class MegatronPPOTrainer(BaseTrainer):
             data = data[: len(data) // pp * pp]
         return data
 
+    @staticmethod
+    def _print_data_list_format(data_list, tag="data_list"):
+        if isinstance(data_list, (list, tuple)):
+            print(f"for debug, {tag} type={type(data_list)}, len={len(data_list)}")
+            for i, item in enumerate(data_list):
+                if isinstance(item, dict):
+                    shapes = {k: v.shape if hasattr(v, "shape") else type(v) for k, v in item.items()}
+                    print(f"for debug, {tag}[{i}] keys={list(item.keys())}, shapes={shapes}")
+                else:
+                    shape = item.shape if hasattr(item, "shape") else "N/A"
+                    print(f"for debug, {tag}[{i}] type={type(item)}, shape={shape}")
+        else:
+            shape = data_list.shape if hasattr(data_list, "shape") else "N/A"
+            print(f"for debug, {tag} type={type(data_list)}, shape={shape}")
+
     def chunk_my_samples(
         self, my_samples: list[PackedPPOSamples], fix_iters: int | None = None
     ) -> list[list[PackedPPOSamples]]:
@@ -750,8 +765,11 @@ class MegatronPPOTrainer(BaseTrainer):
                         offload_data=self.ppo_cfg.offload_data,
                     )
                     print(f"for debug, before megatron_bridge_actor.forward_backward,")
+                    _data_list = self.make_div_pp(iter_data)
+                    self._print_data_list_format(_data_list)
+                    print(f"for debug, before megatron_bridge_actor.forward_backward, self.ppo_cfg.offload_optimizer_state: {self.ppo_cfg.offload_optimizer_state}, self.ppo_cfg.offload_data: {self.ppo_cfg.offload_data}")
                     self.megatron_bridge_actor.forward_backward(
-                        data_list=self.make_div_pp(iter_data),
+                        data_list=_data_list,
                         data_proc_fn=self.ppo_cfg.preprocess_generated,
                         loss_fn=self.ppo_cfg.actor_loss_func,
                         training=self.actor_iteration >= self.ppo_cfg.critic_warmup_iters,
