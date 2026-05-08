@@ -40,22 +40,28 @@ def move_tensor_to_memory(tensor: torch.Tensor) -> torch.Tensor:
 
 def move_to_memory(state_dict: Any) -> Any:
     """Recursively move tensors in nested containers to CPU memory."""
-    if type(state_dict) is list:
+    if isinstance(state_dict, torch.Tensor):
+        # Handle tensors before dict/list checks: a tensor subclass may also
+        # behave like a Mapping/Sequence in some libraries.
+        new_state_dict = move_tensor_to_memory(state_dict)
+    elif isinstance(state_dict, list):
         new_state_dict = state_dict.__class__()
         for i in range(len(state_dict)):
-            if isinstance(state_dict[i], torch.Tensor):
-                new_state_dict.append(move_tensor_to_memory(state_dict[i]))
-            else:
-                new_state_dict.append(move_to_memory(state_dict[i]))
-    elif type(state_dict) is dict:
-        new_state_dict = state_dict.__class__()
+            new_state_dict.append(move_to_memory(state_dict[i]))
+    elif isinstance(state_dict, tuple):
+        new_state_dict = tuple(move_to_memory(v) for v in state_dict)
+    elif isinstance(state_dict, dict):
+        # Use isinstance so that dict subclasses (e.g. OrderedDict returned
+        # by nn.Module.state_dict()) also walk recursively. Otherwise they
+        # would fall through to the deepcopy branch below, which copies any
+        # contained CUDA tensors on-device and triggers OOM.
+        try:
+            new_state_dict = state_dict.__class__()
+        except TypeError:
+            # Some dict subclasses (e.g. defaultdict) require constructor args.
+            new_state_dict = {}
         for k in state_dict:
-            if isinstance(state_dict[k], torch.Tensor):
-                new_state_dict[k] = move_tensor_to_memory(state_dict[k])
-            else:
-                new_state_dict[k] = move_to_memory(state_dict[k])
-    elif isinstance(state_dict, torch.Tensor):
-        new_state_dict = state_dict.detach().cpu()
+            new_state_dict[k] = move_to_memory(state_dict[k])
     else:
         new_state_dict = deepcopy(state_dict)
     return new_state_dict
