@@ -210,6 +210,57 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
 
         return hook
 
+    def make_wqkv_split_hook(attn_module, qkv_name: str, gate_name: str):
+        """Save SteptronOss wqkv output in canonical [Q | K | V] layout (gate split off).
+
+        Raw wqkv layout is [S, B, q_dim + kv_dim + gate_dim] where:
+          - q_dim  = num_heads * head_dim, all q-heads concatenated.
+          - kv_dim = num_kv_heads * 2 * head_dim, per kv-group [K, V] interleaved.
+          - gate_dim = num_heads (head-wise scalar gate).
+
+        Megatron-Bridge keeps the gate in a separate g_proj and its linear_qkv
+        is per-group interleaved [Q_heads_in_group, K, V]. To compare directly,
+        both sides save a canonical [Q (all heads flat) | K (all groups flat) |
+        V (all groups flat)] tensor of shape [S, B, np*hn + ng*hn + ng*hn].
+        """
+        qkv_path = os.path.join(save_dir, f"{qkv_name}.pt")
+        gate_path = os.path.join(save_dir, f"{gate_name}.pt")
+
+        def hook(_module, _inp, out):
+            if PM.world_rank != 0:
+                return
+            tensor = out[0] if isinstance(out, (tuple, list)) else out
+            if not isinstance(tensor, torch.Tensor):
+                return
+            head_dim = attn_module.head_dim
+            nh = attn_module.num_local_heads
+            nkv = attn_module.num_local_kv_heads
+            gate_dim = attn_module.local_wqkv_extra_dims
+            q_dim = head_dim * nh
+            kv_dim = head_dim * 2 * nkv
+
+            S, B, _ = tensor.shape
+            q_part = tensor[..., :q_dim]
+            kv_part = tensor[..., q_dim : q_dim + kv_dim]
+            gate_part = tensor[..., q_dim + kv_dim :]
+            # KV: [S, B, nkv, 2*hn] -> per-group [K, V]
+            kv_view = kv_part.reshape(S, B, nkv, 2, head_dim)
+            k_part = kv_view[:, :, :, 0, :].reshape(S, B, nkv * head_dim)
+            v_part = kv_view[:, :, :, 1, :].reshape(S, B, nkv * head_dim)
+            canonical = torch.cat([q_part.contiguous(), k_part, v_part], dim=-1)
+
+            if not os.path.exists(qkv_path):
+                torch.save(canonical.detach().cpu(), qkv_path)
+                print(f"[ALIGN] intermediate saved {qkv_name} (canonical Q|K|V): shape={tuple(canonical.shape)}", flush=True)
+                print(f"[ALIGN] intermediate {qkv_name}: {canonical}", flush=True)
+            if gate_dim > 0 and not os.path.exists(gate_path):
+                gate_save = gate_part.contiguous()
+                torch.save(gate_save.detach().cpu(), gate_path)
+                print(f"[ALIGN] intermediate saved {gate_name}: shape={tuple(gate_save.shape)}", flush=True)
+                print(f"[ALIGN] intermediate {gate_name}: {gate_save}", flush=True)
+
+        return hook
+
     base_model = unwrap_model(model)
     hooks = []
 
@@ -227,8 +278,28 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             if layer_id is None:
                 continue
             if hasattr(block, "attention"):
-                hooks.append(block.attention.register_forward_hook(
+                attn = block.attention
+                hooks.append(attn.register_forward_hook(
                     make_hook(f"layer_{layer_id:03d}_attention")))
+                if hasattr(attn, "wqkv"):
+                    hooks.append(attn.wqkv.register_forward_hook(
+                        make_wqkv_split_hook(
+                            attn,
+                            f"layer_{layer_id:03d}_attention_qkv",
+                            f"layer_{layer_id:03d}_attention_gate",
+                        )))
+                if getattr(attn, "q_norm", None) is not None:
+                    hooks.append(attn.q_norm.register_forward_hook(
+                        make_hook(f"layer_{layer_id:03d}_attention_qnorm")))
+                if getattr(attn, "k_norm", None) is not None:
+                    hooks.append(attn.k_norm.register_forward_hook(
+                        make_hook(f"layer_{layer_id:03d}_attention_knorm")))
+                if hasattr(attn, "core_attention"):
+                    hooks.append(attn.core_attention.register_forward_hook(
+                        make_hook(f"layer_{layer_id:03d}_attention_core")))
+                if hasattr(attn, "wo"):
+                    hooks.append(attn.wo.register_forward_hook(
+                        make_input_hook(f"layer_{layer_id:03d}_attention_preproj")))
             if hasattr(block, "feed_forward"):
                 hooks.append(block.feed_forward.register_forward_hook(
                     make_hook(f"layer_{layer_id:03d}_ffn")))
