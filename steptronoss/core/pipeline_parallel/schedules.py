@@ -125,19 +125,28 @@ def backward_step(input_tensor, output_tensor, output_tensor_grad):
 
 
 def _print_embedding_debug_info(module, tensor: torch.Tensor) -> None:
-    """打印 embedding 模块的详细诊断信息，用于排查两侧 embedding 不对齐的原因。"""
+    """打印 embedding 模块的详细诊断信息，字段与 Megatron-Bridge 端 _print_embedding_debug_info 保持完全一致以便逐项对比。"""
     print("[ALIGN] ========== Embedding Debug Info (SteptronOss) ==========", flush=True)
     print(f"[ALIGN] module type                : {type(module).__name__}", flush=True)
 
-    # 从 module 直接读取配置属性
-    for attr in [
-        "hidden_size", "embedding_weights_in_fp32", "params_dtype",
-        "fp32_residual_connection", "sequence_parallel",
-    ]:
-        print(f"[ALIGN]   {attr:<40}: {getattr(module, attr, 'N/A')}", flush=True)
+    word_emb = getattr(module, "word_embeddings", None)
+    vocab_size = getattr(word_emb, "num_embeddings", "N/A") if word_emb is not None else "N/A"
+
+    # 与 Megatron-Bridge 的 LanguageModelEmbedding 输出对齐：顶层 module 属性
+    print(f"[ALIGN]   {'vocab_size':<40}: {vocab_size}", flush=True)
+    print(f"[ALIGN]   {'max_sequence_length':<40}: {getattr(module, 'max_sequence_length', 'N/A')}", flush=True)
+    print(f"[ALIGN]   {'add_position_embedding':<40}: {getattr(module, 'add_position_embedding', False)}", flush=True)
+    print(f"[ALIGN]   {'num_tokentypes':<40}: {getattr(module, 'num_tokentypes', 0)}", flush=True)
+    print(f"[ALIGN]   {'scatter_to_sequence_parallel':<40}: {getattr(module, 'sequence_parallel', 'N/A')}", flush=True)
+    print(f"[ALIGN]   {'reduce_scatter_embeddings':<40}: {getattr(module, 'reduce_scatter_embeddings', False)}", flush=True)
+    # config.* 字段（MBridge 端读 module.config.X，SteptronOss 端 WordEmbedding 把对应字段直接挂在 module 上）
+    print(f"[ALIGN]   {'config.hidden_size':<40}: {getattr(module, 'hidden_size', 'N/A')}", flush=True)
+    print(f"[ALIGN]   {'config.hidden_dropout':<40}: {getattr(module, 'hidden_dropout', 0.0)}", flush=True)
+    print(f"[ALIGN]   {'config.fp32_residual_connection':<40}: {getattr(module, 'fp32_residual_connection', 'N/A')}", flush=True)
+    print(f"[ALIGN]   {'config.sequence_parallel':<40}: {getattr(module, 'sequence_parallel', 'N/A')}", flush=True)
+    print(f"[ALIGN]   {'config.embedding_init_method':<40}: {getattr(module, 'embedding_init_method', 'N/A')}", flush=True)
 
     # word_embeddings 权重统计
-    word_emb = getattr(module, "word_embeddings", None)
     if word_emb is not None and hasattr(word_emb, "weight"):
         w = word_emb.weight.data.detach().float()
         print(f"[ALIGN]   word_embeddings.weight shape  : {tuple(word_emb.weight.shape)}", flush=True)
@@ -150,7 +159,7 @@ def _print_embedding_debug_info(module, tensor: torch.Tensor) -> None:
     print(f"[ALIGN]   output dtype                 : {tensor.dtype}", flush=True)
     print(f"[ALIGN]   output stats                 : min={t.min():.6f}  max={t.max():.6f}  mean={t.mean():.6f}  std={t.std():.6f}", flush=True)
     print(f"[ALIGN]   output has_nan                : {torch.isnan(t).any().item()}  has_inf: {torch.isinf(t).any().item()}", flush=True)
-    print("[ALIGN] =============================================================", flush=True)
+    print("[ALIGN] ==============================================================", flush=True)
 
 
 def _build_intermediate_hooks(model, save_dir: str) -> list:
@@ -210,6 +219,60 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
 
         return hook
 
+    def make_rmsnorm_hook(name: str):
+        """RMSNorm 专用 hook：保存输出、权重，并打印 eps / use_fp32 / bias 等关键配置。
+
+        SteptronOss 的 RMSNorm 在 forward 里使用 effective_weight = self.weight + self.bias，
+        其中 bias 是 python int（use_zero_init=False -> 0；True -> 1）。两份都保存以便对比。
+        """
+        out_path = os.path.join(save_dir, f"{name}.pt")
+        weight_path = os.path.join(save_dir, f"{name}_weight.pt")
+        eff_weight_path = os.path.join(save_dir, f"{name}_effective_weight.pt")
+
+        def hook(_module, _inp, out):
+            if PM.world_rank != 0:
+                return
+            tensor = out[0] if isinstance(out, (tuple, list)) else out
+            if isinstance(tensor, torch.Tensor) and not os.path.exists(out_path):
+                torch.save(tensor.detach().cpu(), out_path)
+                tf = tensor.detach().float()
+                print(f"[ALIGN] rmsnorm_out saved {name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}", flush=True)
+                print(f"[ALIGN] rmsnorm_out stats {name}: min={tf.min():.6f}  max={tf.max():.6f}  mean={tf.mean():.6f}  std={tf.std():.6f}", flush=True)
+                print(f"[ALIGN] rmsnorm_out {name}: {tensor}", flush=True)
+
+            weight = getattr(_module, "weight", None)
+            if weight is not None and not os.path.exists(weight_path):
+                w = weight.data.detach().cpu()
+                torch.save(w, weight_path)
+                wf = w.float()
+                print(f"[ALIGN] rmsnorm_weight saved {name}_weight: shape={tuple(w.shape)}, dtype={w.dtype}", flush=True)
+                print(f"[ALIGN] rmsnorm_weight stats {name}_weight: min={wf.min():.6f}  max={wf.max():.6f}  mean={wf.mean():.6f}  std={wf.std():.6f}", flush=True)
+                print(f"[ALIGN] rmsnorm_weight {name}_weight: {w}", flush=True)
+
+                # SteptronOss RMSNorm effective weight = self.weight + self.bias
+                bias = getattr(_module, "bias", 0)
+                if isinstance(bias, torch.Tensor):
+                    eff = (weight.data + bias.data).detach().cpu()
+                else:
+                    eff = (weight.data + float(bias)).detach().cpu()
+                torch.save(eff, eff_weight_path)
+                effs = eff.float()
+                print(f"[ALIGN] rmsnorm_effective_weight saved {name}_effective_weight: shape={tuple(eff.shape)}, bias={bias!r}", flush=True)
+                print(f"[ALIGN] rmsnorm_effective_weight stats {name}_effective_weight: min={effs.min():.6f}  max={effs.max():.6f}  mean={effs.mean():.6f}  std={effs.std():.6f}", flush=True)
+                print(f"[ALIGN] rmsnorm_effective_weight {name}_effective_weight: {eff}", flush=True)
+
+                # 打印 RMSNorm 配置（eps、use_fp32、use_zero_init、sequence_parallel）
+                print(
+                    f"[ALIGN] rmsnorm_cfg {name}: eps={getattr(_module, 'eps', 'N/A')}  "
+                    f"use_fp32={getattr(_module, 'use_fp32', 'N/A')}  "
+                    f"use_zero_init={getattr(_module, 'use_zero_init', 'N/A')}  "
+                    f"sequence_parallel={getattr(_module, 'sequence_parallel', 'N/A')}  "
+                    f"dim={getattr(_module, 'dim', 'N/A')}",
+                    flush=True,
+                )
+
+        return hook
+
     def make_wqkv_split_hook(attn_module, qkv_name: str, gate_name: str):
         """Save SteptronOss wqkv output in canonical [Q | K | V] layout (gate split off).
 
@@ -225,8 +288,12 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         """
         qkv_path = os.path.join(save_dir, f"{qkv_name}.pt")
         gate_path = os.path.join(save_dir, f"{gate_name}.pt")
+        input_path = os.path.join(save_dir, f"{qkv_name}_input.pt")
+        weight_raw_path = os.path.join(save_dir, f"{qkv_name}_weight_raw.pt")
+        weight_canon_path = os.path.join(save_dir, f"{qkv_name}_weight.pt")
+        gate_weight_path = os.path.join(save_dir, f"{gate_name}_weight.pt")
 
-        def hook(_module, _inp, out):
+        def hook(_module, inp, out):
             if PM.world_rank != 0:
                 return
             tensor = out[0] if isinstance(out, (tuple, list)) else out
@@ -259,6 +326,44 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                 print(f"[ALIGN] intermediate saved {gate_name}: shape={tuple(gate_save.shape)}", flush=True)
                 print(f"[ALIGN] intermediate {gate_name}: {gate_save}", flush=True)
 
+            # ===== 保存 qkv 计算用的 input 和 weight，用于排查 qkv 数值不对齐 =====
+            if inp and not os.path.exists(input_path):
+                inp_tensor = inp[0]
+                if isinstance(inp_tensor, torch.Tensor):
+                    torch.save(inp_tensor.detach().cpu(), input_path)
+                    inp_f = inp_tensor.detach().float()
+                    print(f"[ALIGN] qkv_input saved {qkv_name}_input: shape={tuple(inp_tensor.shape)}, dtype={inp_tensor.dtype}", flush=True)
+                    print(f"[ALIGN] qkv_input stats {qkv_name}_input: min={inp_f.min():.6f}  max={inp_f.max():.6f}  mean={inp_f.mean():.6f}  std={inp_f.std():.6f}", flush=True)
+                    print(f"[ALIGN] qkv_input {qkv_name}_input: {inp_tensor}", flush=True)
+            weight = getattr(_module, "weight", None)
+            if weight is not None and not os.path.exists(weight_raw_path):
+                w = weight.data.detach().cpu()
+                torch.save(w, weight_raw_path)
+                wf = w.float()
+                print(f"[ALIGN] qkv_weight_raw saved {qkv_name}_weight_raw: shape={tuple(w.shape)}, dtype={w.dtype}", flush=True)
+                print(f"[ALIGN] qkv_weight_raw stats {qkv_name}_weight_raw: min={wf.min():.6f}  max={wf.max():.6f}  mean={wf.mean():.6f}  std={wf.std():.6f}", flush=True)
+                print(f"[ALIGN] qkv_weight_raw {qkv_name}_weight_raw: {w}", flush=True)
+
+                # Canonical weight 拆分：raw wqkv weight 是 [q_dim + kv_dim + gate_dim, hidden]
+                # 与上面 output 同样的方式拆开，得到 [Q | K | V] 排列，gate 单独存
+                hidden = w.shape[-1]
+                wq = w[:q_dim]
+                wkv = w[q_dim : q_dim + kv_dim]
+                wgate = w[q_dim + kv_dim :]
+                wkv_view = wkv.reshape(nkv, 2, head_dim, hidden)
+                wk = wkv_view[:, 0, :, :].reshape(nkv * head_dim, hidden)
+                wv = wkv_view[:, 1, :, :].reshape(nkv * head_dim, hidden)
+                w_canon = torch.cat([wq.contiguous(), wk, wv], dim=0)
+                torch.save(w_canon, weight_canon_path)
+                wcf = w_canon.float()
+                print(f"[ALIGN] qkv_weight saved {qkv_name}_weight (canonical Q|K|V): shape={tuple(w_canon.shape)}, dtype={w_canon.dtype}", flush=True)
+                print(f"[ALIGN] qkv_weight stats {qkv_name}_weight: min={wcf.min():.6f}  max={wcf.max():.6f}  mean={wcf.mean():.6f}  std={wcf.std():.6f}", flush=True)
+                print(f"[ALIGN] qkv_weight {qkv_name}_weight: {w_canon}", flush=True)
+                if gate_dim > 0 and not os.path.exists(gate_weight_path):
+                    torch.save(wgate.contiguous(), gate_weight_path)
+                    print(f"[ALIGN] qkv_weight saved {gate_name}_weight: shape={tuple(wgate.shape)}, dtype={wgate.dtype}", flush=True)
+                    print(f"[ALIGN] qkv_weight {gate_name}_weight: {wgate}", flush=True)
+
         return hook
 
     base_model = unwrap_model(model)
@@ -277,6 +382,12 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             layer_id = getattr(block, "layer_id", None)
             if layer_id is None:
                 continue
+            if hasattr(block, "attention_norm"):
+                hooks.append(block.attention_norm.register_forward_hook(
+                    make_rmsnorm_hook(f"layer_{layer_id:03d}_attention_norm")))
+            if hasattr(block, "ffn_norm"):
+                hooks.append(block.ffn_norm.register_forward_hook(
+                    make_rmsnorm_hook(f"layer_{layer_id:03d}_ffn_norm")))
             if hasattr(block, "attention"):
                 attn = block.attention
                 hooks.append(attn.register_forward_hook(

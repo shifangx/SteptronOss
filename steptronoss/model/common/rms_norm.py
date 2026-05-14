@@ -53,10 +53,22 @@ class RMSNorm(nn.Module):
         self.weight.sequence_parallel = self.sequence_parallel
 
     def forward(self, x):
+        print(f"in RMSNorm, forward, self.weight: {self.weight}")
+        print(f"in RMSNorm, forward, self.weight.shape: {self.weight.shape}")
+        print(f"in RMSNorm, forward, self.bias: {self.bias}")
+        print(f"in RMSNorm, forward, x.shape: {x.shape}")
+        print(f"in RMSNorm, forward, x: {x}")
         weight = self.weight + self.bias
 
         if self.use_fp32:
             y = RMSNormFunction.apply(x.float()).type_as(x)
         else:
             y = RMSNormFunction.apply(x)
-        return y * weight
+        print(f"in RMSNorm, forward, y.shape: {y.shape}")
+        print(f"in RMSNorm, forward, y: {y}")
+        print(f"in RMSNorm, forward, weight.shape: {weight.shape}")
+        print(f"in RMSNorm, forward, weight: {weight}")
+        output = y * weight
+        print(f"in RMSNorm, forward, output.shape: {output.shape}")
+        print(f"in RMSNorm, forward, output: {output}")
+        return output
