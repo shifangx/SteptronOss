@@ -168,7 +168,7 @@ class Exp(BaseExp):
 
     scheduler_cfg = CosineSchedulerConfig
 
-    resource_cfg = Step3F128kSFTResourceConfig
+    # resource_cfg = Step3F128kSFTResourceConfig
 
     model_cfg = Step3p5FlashModelConfigBalanced
 
