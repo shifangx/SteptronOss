@@ -108,7 +108,7 @@ Optional GPU smoke tests:
     print("nv-grouped-gemm ok:", y.shape, y.dtype, y.device)
     PY
 """
-
+import torch
 from playground.data.sft.oss260312.step_sft_data_config0311_step3p5_tokenizer import (
     Recipe0311CompiledSFTDataConfig,
 )
@@ -137,6 +137,24 @@ class MuonGradientManagerConfig(GradientManagerConfig):
     """Use Muon for 2D params with AdamW fallback."""
 
 
+class EmbedOnlyGradientManagerConfig(GradientManagerConfig):
+    """Freeze everything except tok_embeddings / out_embeddings / ffn_norm to reduce OOM."""
+
+    def build_gradient_manager(self, model):
+        total, frozen = 0, 0
+        for name, param in model.named_parameters():
+            total += 1
+            if "tok_embeddings" in name or "out_embeddings" in name or "ffn_norm" in name:
+                param.requires_grad_(True)
+                print(f"[train] rank {torch.distributed.get_rank()} will train {name}, shape: {param.shape}", flush=True)
+            else:
+                param.requires_grad_(False)
+                frozen += 1
+                print(f"[freeze] rank {torch.distributed.get_rank()} will freeze {name}, shape: {param.shape}", flush=True)
+        print(f"[freeze] frozen {frozen}/{total} params", flush=True)
+        return super().build_gradient_manager(model)
+
+
 class Step3p5FlashModelConfigBalanced(Step3p5FlashModelConfig):
     """Adjust layermap to reduce PP7 memory by moving layers to PP1/PP2."""
 
@@ -148,11 +166,16 @@ class Step3p5FlashModelConfigBalanced(Step3p5FlashModelConfig):
         self.tp_cfg.sequence_parallel = True
 
     def pp_vp_allocation(self, abs_pp_rank: int) -> list[dict]:
-        # PP=8, VPP=3 -> 24 slots. Start from 2 layers/slot and drop 1 layer on
-        # a few slots to get 45 layers total, while keeping PP7 off the floor.
-        lengths = [2] * (PM.size_of("PP") * get_vpp_size())
-        lengths[22] = 1  # PP6/vp2
-        lengths[23] = 0  # PP7/vp2
+        # hard code for debug, num_layers = 45, pp=8, vpp=1
+        lengths = [6] * (PM.size_of("PP") * get_vpp_size())
+        lengths[6] = 5  # PP6
+        lengths[7] = 4  # PP7
+
+        # # PP=8, VPP=3 -> 24 slots. Start from 2 layers/slot and drop 1 layer on
+        # # a few slots to get 45 layers total, while keeping PP7 off the floor.
+        # lengths = [2] * (PM.size_of("PP") * get_vpp_size())
+        # lengths[22] = 1  # PP6/vp2
+        # lengths[23] = 0  # PP7/vp2
 
         expected = PM.size_of("PP") * get_vpp_size()
         if len(lengths) != expected:
@@ -166,7 +189,7 @@ from steptronoss.exp.lr_schedulers import CosineSchedulerConfig
 class Exp(BaseExp):
     log_dir = "/oss/logs/"
 
-    scheduler_cfg = CosineSchedulerConfig
+    # scheduler_cfg = CosineSchedulerConfig
 
     # resource_cfg = Step3F128kSFTResourceConfig
 
@@ -176,7 +199,8 @@ class Exp(BaseExp):
 
     data_cfg = Recipe0311CompiledSFTDataConfig
 
-    optimizer_cfg = MuonGradientManagerConfig
+    # optimizer_cfg = MuonGradientManagerConfig
+    optimizer_cfg = EmbedOnlyGradientManagerConfig
 
     def __init__(self):
         super().__init__()
@@ -185,12 +209,12 @@ class Exp(BaseExp):
         self.trainer_cfg.global_seq_length = 1024 * 128
         self.trainer_cfg.train_iters = None  # auto get
 
-        self.scheduler_cfg.lr = 1e-5
-        self.scheduler_cfg.min_lr = 5e-6
-        self.scheduler_cfg.warmup_schedule = 140
-        self.scheduler_cfg.scheduler_unit = "iter"
-        self.scheduler_cfg.weight_decay = 0.1
-        self.scheduler_cfg.total_schedule = None
+        # self.scheduler_cfg.lr = 1e-5
+        # self.scheduler_cfg.min_lr = 5e-6
+        # self.scheduler_cfg.warmup_schedule = 140
+        # self.scheduler_cfg.scheduler_unit = "iter"
+        # self.scheduler_cfg.weight_decay = 0.1
+        # self.scheduler_cfg.total_schedule = None
 
         self.trainer_cfg.log_interval = 1
         # self.profiler_cfg.timing_log_level = 2
@@ -214,14 +238,14 @@ class Exp(BaseExp):
     def configure_optimizable(self):
         from steptronoss.utils.optimizable import set_optimization
 
-        set_optimization(
-            routed_grouped_ffn="fused",
-            moe_weighted_gather="triton",
-            TokenDispatcher="deep_ep",
-            grouped_gemm="nv_grouped_gemm",
-            # grouped_gemm="function_imple", # slower fallback
-            AttentionCore="flash-attn-3",
-        )
+        # set_optimization(
+        #     routed_grouped_ffn="fused",
+        #     moe_weighted_gather="triton",
+        #     TokenDispatcher="deep_ep",
+        #     grouped_gemm="nv_grouped_gemm",
+        #     # grouped_gemm="function_imple", # slower fallback
+        #     AttentionCore="flash-attn-3",
+        # )
 
 
 if __name__ == "__main__":
