@@ -287,12 +287,10 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         V (all groups flat)] tensor of shape [S, B, np*hn + ng*hn + ng*hn].
         """
         qkv_path = os.path.join(save_dir, f"{qkv_name}.pt")
-        raw_path = os.path.join(save_dir, f"{qkv_name}_raw.pt")
         gate_path = os.path.join(save_dir, f"{gate_name}.pt")
         input_path = os.path.join(save_dir, f"{qkv_name}_input.pt")
-        weight_raw_path = os.path.join(save_dir, f"{qkv_name}_weight_raw.pt")
         weight_canon_path = os.path.join(save_dir, f"{qkv_name}_weight.pt")
-        gate_weight_path = os.path.join(save_dir, f"{gate_name}_weight.pt")
+        gate_weight_path = os.path.join(save_dir, f"{qkv_name}_weight_gate.pt")
 
         def hook(_module, inp, out):
             if PM.world_rank != 0:
@@ -300,16 +298,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             tensor = out[0] if isinstance(out, (tuple, list)) else out
             if not isinstance(tensor, torch.Tensor):
                 return
-
-            # Save wqkv's raw return tensor before any slicing / layout transformation.
-            # Mirrors MBridge gpt_step.py's `{qkv_name}_raw.pt` so the two frameworks
-            # expose an identically named tensor for direct diff.
-            if not os.path.exists(raw_path):
-                torch.save(tensor.detach().cpu(), raw_path)
-                rf = tensor.detach().float()
-                print(f"[ALIGN] qkv_raw saved {qkv_name}_raw: shape={tuple(tensor.shape)}, dtype={tensor.dtype}", flush=True)
-                print(f"[ALIGN] qkv_raw stats {qkv_name}_raw: min={rf.min():.6f}  max={rf.max():.6f}  mean={rf.mean():.6f}  std={rf.std():.6f}", flush=True)
-                print(f"[ALIGN] qkv_raw {qkv_name}_raw: {tensor}", flush=True)
 
             head_dim = attn_module.head_dim
             nh = attn_module.num_local_heads
@@ -348,13 +336,8 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                     print(f"[ALIGN] qkv_input stats {qkv_name}_input: min={inp_f.min():.6f}  max={inp_f.max():.6f}  mean={inp_f.mean():.6f}  std={inp_f.std():.6f}", flush=True)
                     print(f"[ALIGN] qkv_input {qkv_name}_input: {inp_tensor}", flush=True)
             weight = getattr(_module, "weight", None)
-            if weight is not None and not os.path.exists(weight_raw_path):
+            if weight is not None and not os.path.exists(weight_canon_path):
                 w = weight.data.detach().cpu()
-                torch.save(w, weight_raw_path)
-                wf = w.float()
-                print(f"[ALIGN] qkv_weight_raw saved {qkv_name}_weight_raw: shape={tuple(w.shape)}, dtype={w.dtype}", flush=True)
-                print(f"[ALIGN] qkv_weight_raw stats {qkv_name}_weight_raw: min={wf.min():.6f}  max={wf.max():.6f}  mean={wf.mean():.6f}  std={wf.std():.6f}", flush=True)
-                print(f"[ALIGN] qkv_weight_raw {qkv_name}_weight_raw: {w}", flush=True)
 
                 # Canonical weight 拆分：raw wqkv weight 是 [q_dim + kv_dim + gate_dim, hidden]
                 # 与上面 output 同样的方式拆开，得到 [Q | K | V] 排列，gate 单独存
@@ -373,8 +356,8 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                 print(f"[ALIGN] qkv_weight {qkv_name}_weight: {w_canon}", flush=True)
                 if gate_dim > 0 and not os.path.exists(gate_weight_path):
                     torch.save(wgate.contiguous(), gate_weight_path)
-                    print(f"[ALIGN] qkv_weight saved {gate_name}_weight: shape={tuple(wgate.shape)}, dtype={wgate.dtype}", flush=True)
-                    print(f"[ALIGN] qkv_weight {gate_name}_weight: {wgate}", flush=True)
+                    print(f"[ALIGN] qkv_weight saved {qkv_name}_weight_gate: shape={tuple(wgate.shape)}, dtype={wgate.dtype}", flush=True)
+                    print(f"[ALIGN] qkv_weight {qkv_name}_weight_gate: {wgate}", flush=True)
 
         return hook
 
@@ -488,7 +471,7 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                         make_wqkv_split_hook(
                             attn,
                             f"layer_{layer_id:03d}_attention_qkv",
-                            f"layer_{layer_id:03d}_attention_gate",
+                            f"layer_{layer_id:03d}_attention_qkv_gate",
                         )))
                 if getattr(attn, "q_norm", None) is not None:
                     hooks.append(attn.q_norm.register_forward_hook(
