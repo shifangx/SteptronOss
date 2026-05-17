@@ -287,6 +287,7 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         V (all groups flat)] tensor of shape [S, B, np*hn + ng*hn + ng*hn].
         """
         qkv_path = os.path.join(save_dir, f"{qkv_name}.pt")
+        raw_path = os.path.join(save_dir, f"{qkv_name}_raw.pt")
         gate_path = os.path.join(save_dir, f"{gate_name}.pt")
         input_path = os.path.join(save_dir, f"{qkv_name}_input.pt")
         weight_raw_path = os.path.join(save_dir, f"{qkv_name}_weight_raw.pt")
@@ -299,6 +300,17 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             tensor = out[0] if isinstance(out, (tuple, list)) else out
             if not isinstance(tensor, torch.Tensor):
                 return
+
+            # Save wqkv's raw return tensor before any slicing / layout transformation.
+            # Mirrors MBridge gpt_step.py's `{qkv_name}_raw.pt` so the two frameworks
+            # expose an identically named tensor for direct diff.
+            if not os.path.exists(raw_path):
+                torch.save(tensor.detach().cpu(), raw_path)
+                rf = tensor.detach().float()
+                print(f"[ALIGN] qkv_raw saved {qkv_name}_raw: shape={tuple(tensor.shape)}, dtype={tensor.dtype}", flush=True)
+                print(f"[ALIGN] qkv_raw stats {qkv_name}_raw: min={rf.min():.6f}  max={rf.max():.6f}  mean={rf.mean():.6f}  std={rf.std():.6f}", flush=True)
+                print(f"[ALIGN] qkv_raw {qkv_name}_raw: {tensor}", flush=True)
+
             head_dim = attn_module.head_dim
             nh = attn_module.num_local_heads
             nkv = attn_module.num_local_kv_heads
@@ -603,6 +615,7 @@ class FWBWScheduler:
         # ===== ALIGNMENT: save model output logits (PP last stage only, triggered by env var) =====
         _align_output_path = _align_os.environ.get("STEPTRON_SAVE_OUTPUT_PATH", "")
         print(f"[ALIGN] _align_output_path: {_align_output_path}")
+        print(f"[ALIGN] _align_logits.shape: {output.shape}")
         print(f"[ALIGN] _align_logits: {output}")
         if (
             _align_output_path
