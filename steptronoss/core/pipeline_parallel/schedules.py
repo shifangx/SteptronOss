@@ -361,6 +361,92 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
 
         return hook
 
+    def make_core_attn_pre_hook(qkv_name: str):
+        """forward_pre_hook on attn.core_attention to capture Q/K (post-RoPE) and V.
+
+        forward_attention_core invokes ``core_attention(xq, xk, xv, ...)``. We grab
+        the first three positional args (or fall back to kwargs) and dump them so
+        the diff against Megatron-Bridge has matching ``{qkv_name}_q_post_rope.pt``
+        / ``_k_post_rope.pt`` / ``_v.pt`` files. V doesn't pass through RoPE; it
+        carries the same content as the V slice of the canonical Q|K|V dump but in
+        the layout that actually enters attention (``[B, S, nkv, hn]``).
+        """
+        q_path = os.path.join(save_dir, f"{qkv_name}_q_post_rope.pt")
+        k_path = os.path.join(save_dir, f"{qkv_name}_k_post_rope.pt")
+        v_path = os.path.join(save_dir, f"{qkv_name}_v.pt")
+
+        def _dump(tensor, path, tag):
+            if not isinstance(tensor, torch.Tensor) or os.path.exists(path):
+                return
+            torch.save(tensor.detach().cpu(), path)
+            tf = tensor.detach().float()
+            base = os.path.basename(path)[:-3]
+            print(f"[ALIGN] {tag} saved {base}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}", flush=True)
+            print(f"[ALIGN] {tag} stats {base}: min={tf.min():.6f}  max={tf.max():.6f}  mean={tf.mean():.6f}  std={tf.std():.6f}", flush=True)
+            print(f"[ALIGN] {tag} {base}: {tensor}", flush=True)
+
+        def hook(_module, args, kwargs):
+            if PM.world_rank != 0:
+                return
+            xq = args[0] if len(args) >= 1 else kwargs.get("xq")
+            xk = args[1] if len(args) >= 2 else kwargs.get("xk")
+            xv = args[2] if len(args) >= 3 else kwargs.get("xv")
+            _dump(xq, q_path, "q_post_rope")
+            _dump(xk, k_path, "k_post_rope")
+            _dump(xv, v_path, "v")
+
+        return hook
+
+    def make_rope_cos_sin_hook(rope_name: str):
+        """Dump YARNRoPE's cos/sin cache sliced to the *actual* seqlen used in this forward.
+
+        ``_cos_cache`` / ``_sin_cache`` are pre-built at ``__init__`` time to cover
+        ``max_position_embeddings`` rows (e.g. 128 * 1024 in Step 3.5). The real
+        forward only consumes the first ``actual_seqlen`` rows, which is what we
+        want to diff against MBridge's ``emb`` tensor (also sized to actual_seqlen).
+        """
+        cos_path = os.path.join(save_dir, f"{rope_name}_cos.pt")
+        sin_path = os.path.join(save_dir, f"{rope_name}_sin.pt")
+
+        def _resolve_used_seqlen(inp_args, module) -> int:
+            """Mirror YARNRoPE.forward's max_seqlen computation to get the slice we care about."""
+            feature = inp_args[0] if len(inp_args) >= 1 else None
+            position_id = inp_args[1] if len(inp_args) >= 2 else None
+            if isinstance(position_id, torch.Tensor):
+                # packed sample: cache must cover max_position+1
+                return int(position_id.detach().amax().cpu()) + 1
+            if isinstance(feature, torch.Tensor):
+                cp_size = PM.size_of("CP")
+                return int(feature.shape[1]) * cp_size
+            return int(getattr(module, "_cached_seqlen", 0))
+
+        def hook(_module, _inp, _out):
+            if PM.world_rank != 0:
+                return
+            if os.path.exists(cos_path) and os.path.exists(sin_path):
+                return
+            used_seqlen = _resolve_used_seqlen(_inp, _module)
+            cached = int(getattr(_module, "_cached_seqlen", 0))
+            slice_len = min(used_seqlen, cached) if cached > 0 else used_seqlen
+            cos = getattr(_module, "_cos_cache", None)
+            sin = getattr(_module, "_sin_cache", None)
+            if isinstance(cos, torch.Tensor) and slice_len > 0 and not os.path.exists(cos_path):
+                cos_slice = cos[:slice_len].detach().cpu()
+                torch.save(cos_slice, cos_path)
+                cf = cos_slice.float()
+                print(f"[ALIGN] rope_cos saved {rope_name}_cos: shape={tuple(cos_slice.shape)}, dtype={cos_slice.dtype} (used_seqlen={used_seqlen}, cached={cached})", flush=True)
+                print(f"[ALIGN] rope_cos stats {rope_name}_cos: min={cf.min():.6f}  max={cf.max():.6f}  mean={cf.mean():.6f}  std={cf.std():.6f}", flush=True)
+                print(f"[ALIGN] rope_cos {rope_name}_cos: {cos_slice}", flush=True)
+            if isinstance(sin, torch.Tensor) and slice_len > 0 and not os.path.exists(sin_path):
+                sin_slice = sin[:slice_len].detach().cpu()
+                torch.save(sin_slice, sin_path)
+                sf = sin_slice.float()
+                print(f"[ALIGN] rope_sin saved {rope_name}_sin: shape={tuple(sin_slice.shape)}, dtype={sin_slice.dtype} (used_seqlen={used_seqlen}, cached={cached})", flush=True)
+                print(f"[ALIGN] rope_sin stats {rope_name}_sin: min={sf.min():.6f}  max={sf.max():.6f}  mean={sf.mean():.6f}  std={sf.std():.6f}", flush=True)
+                print(f"[ALIGN] rope_sin {rope_name}_sin: {sin_slice}", flush=True)
+
+        return hook
+
     def _eager_dump_rmsnorm_weight(norm_module, dump_dir: str, name: str) -> None:
         """Immediately dump a SteptronOss RMSNorm's raw weight and effective weight.
 
@@ -482,6 +568,13 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                 if hasattr(attn, "core_attention"):
                     hooks.append(attn.core_attention.register_forward_hook(
                         make_hook(f"layer_{layer_id:03d}_attention_core")))
+                    hooks.append(attn.core_attention.register_forward_pre_hook(
+                        make_core_attn_pre_hook(f"layer_{layer_id:03d}_attention_qkv"),
+                        with_kwargs=True,
+                    ))
+                if getattr(attn, "rope", None) is not None:
+                    hooks.append(attn.rope.register_forward_hook(
+                        make_rope_cos_sin_hook(f"layer_{layer_id:03d}_attention_rope")))
                 if hasattr(attn, "wo"):
                     hooks.append(attn.wo.register_forward_hook(
                         make_input_hook(f"layer_{layer_id:03d}_attention_preproj")))
