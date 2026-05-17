@@ -287,9 +287,15 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         V (all groups flat)] tensor of shape [S, B, np*hn + ng*hn + ng*hn].
         """
         qkv_path = os.path.join(save_dir, f"{qkv_name}.pt")
+        q_path = os.path.join(save_dir, f"{qkv_name}_q.pt")
+        k_path = os.path.join(save_dir, f"{qkv_name}_k.pt")
+        v_path = os.path.join(save_dir, f"{qkv_name}_v.pt")
         gate_path = os.path.join(save_dir, f"{gate_name}.pt")
         input_path = os.path.join(save_dir, f"{qkv_name}_input.pt")
         weight_canon_path = os.path.join(save_dir, f"{qkv_name}_weight.pt")
+        weight_q_path = os.path.join(save_dir, f"{qkv_name}_weight_q.pt")
+        weight_k_path = os.path.join(save_dir, f"{qkv_name}_weight_k.pt")
+        weight_v_path = os.path.join(save_dir, f"{qkv_name}_weight_v.pt")
         gate_weight_path = os.path.join(save_dir, f"{qkv_name}_weight_gate.pt")
 
         def hook(_module, inp, out):
@@ -320,6 +326,19 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                 torch.save(canonical.detach().cpu(), qkv_path)
                 print(f"[ALIGN] intermediate saved {qkv_name} (canonical Q|K|V): shape={tuple(canonical.shape)}", flush=True)
                 print(f"[ALIGN] intermediate {qkv_name}: {canonical}", flush=True)
+            for sub_name, sub_tensor, sub_path in (
+                ("q", q_part, q_path),
+                ("k", k_part, k_path),
+                ("v", v_part, v_path),
+            ):
+                if os.path.exists(sub_path):
+                    continue
+                s = sub_tensor.contiguous().detach().cpu()
+                torch.save(s, sub_path)
+                sf = s.float()
+                print(f"[ALIGN] intermediate saved {qkv_name}_{sub_name}: shape={tuple(s.shape)}, dtype={s.dtype}", flush=True)
+                print(f"[ALIGN] intermediate stats {qkv_name}_{sub_name}: min={sf.min():.6f}  max={sf.max():.6f}  mean={sf.mean():.6f}  std={sf.std():.6f}", flush=True)
+                print(f"[ALIGN] intermediate {qkv_name}_{sub_name}: {s}", flush=True)
             if gate_dim > 0 and not os.path.exists(gate_path):
                 gate_save = gate_part.contiguous()
                 torch.save(gate_save.detach().cpu(), gate_path)
@@ -354,6 +373,18 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                 print(f"[ALIGN] qkv_weight saved {qkv_name}_weight (canonical Q|K|V): shape={tuple(w_canon.shape)}, dtype={w_canon.dtype}", flush=True)
                 print(f"[ALIGN] qkv_weight stats {qkv_name}_weight: min={wcf.min():.6f}  max={wcf.max():.6f}  mean={wcf.mean():.6f}  std={wcf.std():.6f}", flush=True)
                 print(f"[ALIGN] qkv_weight {qkv_name}_weight: {w_canon}", flush=True)
+                for sub_name, sub_w, sub_path in (
+                    ("q", wq.contiguous(), weight_q_path),
+                    ("k", wk.contiguous(), weight_k_path),
+                    ("v", wv.contiguous(), weight_v_path),
+                ):
+                    if os.path.exists(sub_path):
+                        continue
+                    torch.save(sub_w, sub_path)
+                    wsf = sub_w.float()
+                    print(f"[ALIGN] qkv_weight saved {qkv_name}_weight_{sub_name}: shape={tuple(sub_w.shape)}, dtype={sub_w.dtype}", flush=True)
+                    print(f"[ALIGN] qkv_weight stats {qkv_name}_weight_{sub_name}: min={wsf.min():.6f}  max={wsf.max():.6f}  mean={wsf.mean():.6f}  std={wsf.std():.6f}", flush=True)
+                    print(f"[ALIGN] qkv_weight {qkv_name}_weight_{sub_name}: {sub_w}", flush=True)
                 if gate_dim > 0 and not os.path.exists(gate_weight_path):
                     torch.save(wgate.contiguous(), gate_weight_path)
                     print(f"[ALIGN] qkv_weight saved {qkv_name}_weight_gate: shape={tuple(wgate.shape)}, dtype={wgate.dtype}", flush=True)
@@ -367,13 +398,14 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         forward_attention_core invokes ``core_attention(xq, xk, xv, ...)``. We grab
         the first three positional args (or fall back to kwargs) and dump them so
         the diff against Megatron-Bridge has matching ``{qkv_name}_q_post_rope.pt``
-        / ``_k_post_rope.pt`` / ``_v.pt`` files. V doesn't pass through RoPE; it
-        carries the same content as the V slice of the canonical Q|K|V dump but in
-        the layout that actually enters attention (``[B, S, nkv, hn]``).
+        / ``_k_post_rope.pt`` / ``_v_post_rope.pt`` files. V doesn't pass through
+        RoPE itself; it carries the same content as the V slice of the canonical
+        Q|K|V dump but in the layout that actually enters attention
+        (``[B, S, nkv, hn]``).
         """
         q_path = os.path.join(save_dir, f"{qkv_name}_q_post_rope.pt")
         k_path = os.path.join(save_dir, f"{qkv_name}_k_post_rope.pt")
-        v_path = os.path.join(save_dir, f"{qkv_name}_v.pt")
+        v_path = os.path.join(save_dir, f"{qkv_name}_v_post_rope.pt")
 
         def _dump(tensor, path, tag):
             if not isinstance(tensor, torch.Tensor) or os.path.exists(path):
@@ -393,7 +425,7 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             xv = args[2] if len(args) >= 3 else kwargs.get("xv")
             _dump(xq, q_path, "q_post_rope")
             _dump(xk, k_path, "k_post_rope")
-            _dump(xv, v_path, "v")
+            _dump(xv, v_path, "v_post_rope")
 
         return hook
 
