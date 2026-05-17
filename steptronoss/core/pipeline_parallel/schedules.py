@@ -177,8 +177,8 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         path = os.path.join(save_dir, f"{name}.pt")
 
         def hook(_module, _inp, out):
-            if PM.world_rank != 0:
-                return
+            # if PM.world_rank != 0:
+            #     return
             if os.path.exists(path):
                 return
             tensor = out[0] if isinstance(out, (tuple, list)) else out
@@ -460,7 +460,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         (post checkpoint load), not a leftover from a previous run.
         """
         if PM.world_rank != 0:
-            print(f"in schedules.py, in _eager_dump_rmsnorm_weight, PM.world_rank != 0, will return")
             return
         print(f"in schedules.py, in _eager_dump_rmsnorm_weight, name: {name}")
         weight = getattr(norm_module, "weight", None)
@@ -690,9 +689,6 @@ class FWBWScheduler:
 
         # ===== ALIGNMENT: save model output logits (PP last stage only, triggered by env var) =====
         _align_output_path = _align_os.environ.get("STEPTRON_SAVE_OUTPUT_PATH", "")
-        print(f"[ALIGN] _align_output_path: {_align_output_path}")
-        print(f"[ALIGN] _align_logits.shape: {output.shape}")
-        print(f"[ALIGN] _align_logits: {output}")
         if (
             _align_output_path
             and not _align_os.path.exists(_align_output_path)
