@@ -330,9 +330,7 @@ class GroupedQueryAttention(torch.nn.Module):
         else:
             # Non-CP path via shared _forward
             xq, xk, xv = [rearrange(i, "s b h d -> b s h d") for i in [xq, xk, xv]]
-            # for debug, delete rope
-            print(f"for debug, in grouped_query_attention.py, delete rope")
-            # xq, xk = self.forward_rope(xq, xk, pos_id_q=position_id, pos_id_k=position_id)
+            xq, xk = self.forward_rope(xq, xk, pos_id_q=position_id, pos_id_k=position_id)
             output = self.forward_attention_core(
                 xq,
                 xk,

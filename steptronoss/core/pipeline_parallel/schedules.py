@@ -177,8 +177,8 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         path = os.path.join(save_dir, f"{name}.pt")
 
         def hook(_module, _inp, out):
-            # if PM.world_rank != 0:
-            #     return
+            if PM.world_rank != 0:
+                return
             if os.path.exists(path):
                 return
             tensor = out[0] if isinstance(out, (tuple, list)) else out
@@ -479,72 +479,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
 
         return hook
 
-    def _eager_dump_rmsnorm_weight(norm_module, dump_dir: str, name: str) -> None:
-        """Immediately dump a SteptronOss RMSNorm's raw weight and effective weight.
-
-        Unlike the forward hook ``make_rmsnorm_hook``, this runs at registration time
-        (before any forward), so the file is guaranteed to be written even if:
-          - the forward hook never fires (e.g. module not on the forward path), or
-          - a previous run left a stale ``*_weight.pt`` and the hook's
-            ``os.path.exists`` guard would otherwise skip the new write.
-
-        Always overwrites so the dumped tensor reflects the *current* parameter
-        (post checkpoint load), not a leftover from a previous run.
-        """
-        if PM.world_rank != 0:
-            return
-        print(f"in schedules.py, in _eager_dump_rmsnorm_weight, name: {name}")
-        weight = getattr(norm_module, "weight", None)
-        if weight is None:
-            print(f"in schedules.py, in _eager_dump_rmsnorm_weight, weight is None, will return")
-            return
-
-        w = weight.data.detach().cpu()
-        w_path = os.path.join(dump_dir, f"{name}_weight.pt")
-        eff_path = os.path.join(dump_dir, f"{name}_effective_weight.pt")
-        torch.save(w, w_path)
-        wf = w.float()
-        print(
-            f"[ALIGN] eager rmsnorm_weight dumped {name}_weight: "
-            f"shape={tuple(w.shape)}, dtype={w.dtype}",
-            flush=True,
-        )
-        print(
-            f"[ALIGN] eager rmsnorm_weight stats {name}_weight: "
-            f"min={wf.min():.6f}  max={wf.max():.6f}  mean={wf.mean():.6f}  std={wf.std():.6f}",
-            flush=True,
-        )
-        print(f"[ALIGN] eager rmsnorm_weight {name}_weight: {w}", flush=True)
-
-        # Effective γ = weight + bias (SteptronOss RMSNorm uses python int bias: 0 or 1).
-        bias = getattr(norm_module, "bias", 0)
-        if isinstance(bias, torch.Tensor):
-            eff = (weight.data + bias.data).detach().cpu()
-        else:
-            eff = (weight.data + float(bias)).detach().cpu()
-        torch.save(eff, eff_path)
-        effs = eff.float()
-        print(
-            f"[ALIGN] eager rmsnorm_effective_weight dumped {name}_effective_weight: "
-            f"shape={tuple(eff.shape)}, bias={bias!r}",
-            flush=True,
-        )
-        print(
-            f"[ALIGN] eager rmsnorm_effective_weight stats {name}_effective_weight: "
-            f"min={effs.min():.6f}  max={effs.max():.6f}  mean={effs.mean():.6f}  std={effs.std():.6f}",
-            flush=True,
-        )
-        print(f"[ALIGN] eager rmsnorm_effective_weight {name}_effective_weight: {eff}", flush=True)
-        print(
-            f"[ALIGN] eager rmsnorm_cfg {name}: "
-            f"eps={getattr(norm_module, 'eps', 'N/A')}  "
-            f"use_fp32={getattr(norm_module, 'use_fp32', 'N/A')}  "
-            f"use_zero_init={getattr(norm_module, 'use_zero_init', 'N/A')}  "
-            f"sequence_parallel={getattr(norm_module, 'sequence_parallel', 'N/A')}  "
-            f"dim={getattr(norm_module, 'dim', 'N/A')}",
-            flush=True,
-        )
-
     base_model = unwrap_model(model)
     hooks = []
 
@@ -564,21 +498,9 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             if hasattr(block, "attention_norm"):
                 hooks.append(block.attention_norm.register_forward_hook(
                     make_rmsnorm_hook(f"layer_{layer_id:03d}_attention_norm")))
-                
-                print(f"in schedules.py, will call _eager_dump_rmsnorm_weight, for layer {layer_id:03d}_attention_norm")
-                _eager_dump_rmsnorm_weight(
-                    block.attention_norm,
-                    save_dir,
-                    f"layer_{layer_id:03d}_attention_norm",
-                )
             if hasattr(block, "ffn_norm"):
                 hooks.append(block.ffn_norm.register_forward_hook(
                     make_rmsnorm_hook(f"layer_{layer_id:03d}_ffn_norm")))
-                _eager_dump_rmsnorm_weight(
-                    block.ffn_norm,
-                    save_dir,
-                    f"layer_{layer_id:03d}_ffn_norm",
-                )
             if hasattr(block, "attention"):
                 attn = block.attention
                 hooks.append(attn.register_forward_hook(
