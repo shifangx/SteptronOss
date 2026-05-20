@@ -164,6 +164,7 @@ class GroupedQueryAttention(torch.nn.Module):
             ntk_interp_ratio=self.cfg.ntk_interp_ratio,
             max_position_embeddings=self.cfg.max_position_embeddings,
         )
+        rope.layer_id = self.layer_id
         return rope
 
     def head_wise_attn_gate_function(self, output: torch.FloatTensor, gate_weight: torch.FloatTensor):

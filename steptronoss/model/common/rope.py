@@ -1,4 +1,5 @@
 import math
+import os
 
 import torch
 from loguru import logger
@@ -244,7 +245,45 @@ class YARNRoPE(torch.nn.Module):
             b, s, h, c = feature.shape
             feature = feature.view(b, s, h, c // 2, 2).transpose(4, 3).reshape(b, s, h, c)
 
+        self._maybe_save_cos_sin(cos, sin, feature)
+
         dtype = feature.dtype
         feature = feature.to(torch.float32)
         feature = feature * cos + self.rotate_half(feature) * sin
         return feature.to(dtype)
+
+    def _maybe_save_cos_sin(self, cos: Tensor, sin: Tensor, feature: Tensor) -> None:
+        """When STEPTRON_SAVE_ROPE_PATH is set, dump per-call cos/sin tensors.
+
+        Filename: rope_layer{L:03d}_call{N}.pt — N is `counter % 2`, so call0
+        captures q and call1 captures k. The modulo keeps recomputation/backward
+        replays (which re-enter forward) and multi-step runs from creating extra
+        files. Existing files are not overwritten, so the first forward wins.
+        """
+        save_dir = os.environ.get("STEPTRON_SAVE_ROPE_PATH")
+        if not save_dir:
+            return
+
+        layer_id = getattr(self, "layer_id", None)
+        if layer_id is None:
+            return  # only save when attached to a layer
+
+        counter = getattr(self, "_save_call_counter", 0)
+        self._save_call_counter = counter + 1
+        call_idx = counter % 2
+
+        os.makedirs(save_dir, exist_ok=True)
+        fname = os.path.join(save_dir, f"rope_layer{int(layer_id):03d}_call{call_idx}.pt")
+        if os.path.exists(fname):
+            return
+
+        payload = {
+            "cos": cos.detach().to("cpu", torch.float32),
+            "sin": sin.detach().to("cpu", torch.float32),
+            "feature_shape": tuple(feature.shape),
+            "dim": int(self.dim),
+            "theta": float(self.theta),
+            "layer_id": int(layer_id),
+            "call_idx": int(call_idx),
+        }
+        torch.save(payload, fname)
