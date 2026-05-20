@@ -104,6 +104,9 @@ class ImageInsertInputEmbeddingConfig(InputEmbeddingConfig):
     encoder_no_grad: bool = False
     """If true, freeze the vision encoder and skip its gradients."""
 
+    encode_images_locally: bool = False
+    """If true, encode image tensors on the rank that already owns them."""
+
     projector_bias: bool = False
     """Whether the vision-language projector uses bias."""
 

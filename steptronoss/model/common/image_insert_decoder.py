@@ -109,9 +109,13 @@ class ImageInsertDecoderMixin:
             if insert_image.images is None:
                 raise ValueError("ImageForInsert requires either images or image_features")
 
-            local_images = self.mesh_connector.forward(insert_image.images)
-            if local_images is None:
-                raise ValueError("MeshConnector returned no images for ImageForInsert")
+            encode_images_locally = getattr(self.cfg.tok_embed_cfg, "encode_images_locally", False)
+            if encode_images_locally:
+                local_images = insert_image.images
+            else:
+                local_images = self.mesh_connector.forward(insert_image.images)
+                if local_images is None:
+                    raise ValueError("MeshConnector returned no images for ImageForInsert")
             if local_images.shape[0] == 0:
                 local_features = local_images.new_empty((0, 0, 0))
             else:
@@ -120,7 +124,7 @@ class ImageInsertDecoderMixin:
                     torch.set_grad_enabled(not self.cfg.tok_embed_cfg.encoder_no_grad),
                 ):
                     local_features = self.encoder(local_images.to(device=encoder_device, dtype=encoder_dtype))
-            image_features = self.mesh_connector.backward(local_features)
+            image_features = local_features if encode_images_locally else self.mesh_connector.backward(local_features)
             processed.append(
                 ImageForInsert(
                     insert_start_token=insert_image.insert_start_token,
