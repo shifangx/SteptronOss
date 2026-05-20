@@ -342,7 +342,7 @@ class GroupedQueryAttention(torch.nn.Module):
             )
             output = rearrange(output, "b s h d -> s b (h d)")
 
-        output = self.wo.forward(
+        output = self.wo(
             output,
             custom_pre_recompute_function_input=gate_weight,
         )[0]

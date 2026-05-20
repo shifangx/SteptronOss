@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from steptronoss.core.parallel_state import PM
 from steptronoss.utils.optimizable import optimizable
 
 
@@ -31,6 +32,8 @@ def _maybe_save_sdpa_io(
     don't pollute the dump. ``module.layer_id`` is set by ``GroupedQueryAttention`` on the
     enclosing attention; if absent we skip silently.
     """
+    if PM.world_rank != 0:
+        return
     save_dir = os.environ.get("STEPTRON_SAVE_INTERMEDIATE_PATH")
     if not save_dir:
         return
