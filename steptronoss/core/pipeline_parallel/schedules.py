@@ -162,6 +162,38 @@ def _print_embedding_debug_info(module, tensor: torch.Tensor) -> None:
     print("[ALIGN] ==============================================================", flush=True)
 
 
+_PRINTED_MODEL_STRUCTURE = set()
+
+
+def _maybe_print_model_structure(model) -> None:
+    """When STEPTRON_PRINT_MODEL is set, print this PP/VPP rank's model structure once.
+
+    Each (PP_rank, VPP_rank) pair prints exactly once. Output is gated by the
+    env var so it's opt-in for alignment debugging.
+    """
+    import os as _os
+
+    if not _os.environ.get("STEPTRON_PRINT_MODEL"):
+        return
+
+    pp_rank = PM.rank_in("PP")
+    vpp_rank = get_vpp_rank()
+    key = (pp_rank, vpp_rank)
+    if key in _PRINTED_MODEL_STRUCTURE:
+        return
+    _PRINTED_MODEL_STRUCTURE.add(key)
+
+    target = unwrap_model(model)
+    header = f"[MODEL] ===== SteptronOss model structure (PP={pp_rank}, VPP={vpp_rank}) ====="
+    print(header, flush=True)
+    print(repr(target), flush=True)
+    n_params = sum(p.numel() for p in target.parameters())
+    n_trainable = sum(p.numel() for p in target.parameters() if p.requires_grad)
+    print(f"[MODEL]   total params     : {n_params:,}", flush=True)
+    print(f"[MODEL]   trainable params : {n_trainable:,}", flush=True)
+    print("[MODEL] " + "=" * (len(header) - len("[MODEL] ")), flush=True)
+
+
 def _build_intermediate_hooks(model, save_dir: str) -> list:
     """Register forward hooks to capture intermediate activations for layer-by-layer alignment.
 
@@ -429,6 +461,55 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
 
         return hook
 
+    def make_core_attention_io_hook(name: str):
+        """Capture core_attention's I/O at the boundary the SDPA actually sees.
+
+        SteptronOss ``forward_attention_core`` invokes
+        ``core_attention(xq, xk, xv, cu_seqlens=..., max_seq_len=...)`` after
+        RoPE. We register both a forward_pre_hook (to dump xq/xk/xv) and a
+        forward_hook (to dump the returned tensor), producing four .pt files
+        per layer for direct cross-framework diff:
+
+          - ``{name}_input_q.pt``   xq passed into core_attention
+          - ``{name}_input_k.pt``   xk passed into core_attention
+          - ``{name}_input_v.pt``   xv passed into core_attention
+          - ``{name}_output.pt``    tensor returned by core_attention
+
+        Idempotent: existing files are not overwritten.
+        """
+        q_path = os.path.join(save_dir, f"{name}_input_q.pt")
+        k_path = os.path.join(save_dir, f"{name}_input_k.pt")
+        v_path = os.path.join(save_dir, f"{name}_input_v.pt")
+        out_path = os.path.join(save_dir, f"{name}_output.pt")
+
+        def _dump(tensor, path, tag):
+            if not isinstance(tensor, torch.Tensor) or os.path.exists(path):
+                return
+            torch.save(tensor.detach().cpu(), path)
+            tf = tensor.detach().float()
+            base = os.path.basename(path)[:-3]
+            print(f"[ALIGN] {tag} saved {base}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}", flush=True)
+            print(f"[ALIGN] {tag} stats {base}: min={tf.min():.6f}  max={tf.max():.6f}  mean={tf.mean():.6f}  std={tf.std():.6f}", flush=True)
+            print(f"[ALIGN] {tag} {base}: {tensor}", flush=True)
+
+        def pre_hook(_module, args, kwargs):
+            if PM.world_rank != 0:
+                return
+            xq = args[0] if len(args) >= 1 else kwargs.get("xq") or kwargs.get("q")
+            xk = args[1] if len(args) >= 2 else kwargs.get("xk") or kwargs.get("k")
+            xv = args[2] if len(args) >= 3 else kwargs.get("xv") or kwargs.get("v")
+            _dump(xq, q_path, "core_attn_in_q")
+            _dump(xk, k_path, "core_attn_in_k")
+            _dump(xv, v_path, "core_attn_in_v")
+
+        def post_hook(_module, _inp, out):
+            if PM.world_rank != 0:
+                return
+            tensor = out[0] if isinstance(out, (tuple, list)) else out
+            _dump(tensor, out_path, "core_attn_out")
+
+        return pre_hook, post_hook
+
     def make_rope_cos_sin_hook(rope_name: str):
         """Dump YARNRoPE's cos/sin cache sliced to the *actual* seqlen used in this forward.
 
@@ -525,6 +606,15 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                         make_core_attn_pre_hook(f"layer_{layer_id:03d}_attention_qkv"),
                         with_kwargs=True,
                     ))
+                    # Dedicated I/O dump at the core_attention boundary:
+                    # writes _input_q / _input_k / _input_v / _output for direct diff.
+                    _core_pre, _core_post = make_core_attention_io_hook(
+                        f"layer_{layer_id:03d}_attention_core"
+                    )
+                    hooks.append(attn.core_attention.register_forward_pre_hook(
+                        _core_pre, with_kwargs=True,
+                    ))
+                    hooks.append(attn.core_attention.register_forward_hook(_core_post))
                 if getattr(attn, "rope", None) is not None:
                     hooks.append(attn.rope.register_forward_hook(
                         make_rope_cos_sin_hook(f"layer_{layer_id:03d}_attention_rope")))
@@ -600,6 +690,7 @@ class FWBWScheduler:
 
         set_vpp_rank(vp_rank)
         model = self.models[vp_rank]
+        _maybe_print_model_structure(model)
         unwrap_model(model)._set_input_tensor(input_tensor)
 
         data = self._prefetched_data[vp_rank].pop(0)
