@@ -622,8 +622,40 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                     hooks.append(attn.wo.register_forward_hook(
                         make_input_hook(f"layer_{layer_id:03d}_attention_preproj")))
             if hasattr(block, "feed_forward"):
-                hooks.append(block.feed_forward.register_forward_hook(
+                ff = block.feed_forward
+                hooks.append(ff.register_forward_hook(
                     make_hook(f"layer_{layer_id:03d}_ffn")))
+                # ffn_input = feed_forward.forward 收到的张量（pre-FFN/MoE 内部）
+                hooks.append(ff.register_forward_hook(
+                    make_input_hook(f"layer_{layer_id:03d}_ffn_input")))
+                # Dense path: feed_forward == FeedForward (w1 + SwiGLU + w2)
+                #   Note: with fuse_activation_w2=True, w2 input is 2F (pre-SwiGLU),
+                #   not F (post-SwiGLU) — Megatron's linear_fc2 input is F. The
+                #   `ffn_pre_w2` files at the two sides therefore sit at different
+                #   semantic positions; treat the diff accordingly.
+                if hasattr(ff, "w1"):
+                    hooks.append(ff.w1.register_forward_hook(
+                        make_hook(f"layer_{layer_id:03d}_ffn_w1_out")))
+                if hasattr(ff, "w2"):
+                    hooks.append(ff.w1.register_forward_hook(
+                        make_hook(f"layer_{layer_id:03d}_ffn_w2_out")))
+                    hooks.append(ff.w2.register_forward_hook(
+                        make_input_hook(f"layer_{layer_id:03d}_ffn_w2_input")))
+                # MoE path: feed_forward == MoeShareExpertFFN (moe + share_expert)
+                #   moe.gate dumps pre-activation logits;
+                #   Megatron's TopKRouter dumps post-activation probs +
+                #   routing_map under the same `ffn_router` prefix.
+                if hasattr(ff, "moe"):
+                    moe = ff.moe
+                    if hasattr(moe, "gate"):
+                        hooks.append(moe.gate.register_forward_hook(
+                            make_hook(f"layer_{layer_id:03d}_ffn_router_logits")))
+                    if hasattr(moe, "experts"):
+                        hooks.append(moe.experts.register_forward_hook(
+                            make_hook(f"layer_{layer_id:03d}_ffn_expert_out")))
+                if hasattr(ff, "share_expert"):
+                    hooks.append(ff.share_expert.register_forward_hook(
+                        make_hook(f"layer_{layer_id:03d}_ffn_shared_out")))
 
     return hooks
 
