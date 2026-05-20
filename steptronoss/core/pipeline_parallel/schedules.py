@@ -579,9 +579,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             if hasattr(block, "attention_norm"):
                 hooks.append(block.attention_norm.register_forward_hook(
                     make_rmsnorm_hook(f"layer_{layer_id:03d}_attention_norm")))
-            if hasattr(block, "ffn_norm"):
-                hooks.append(block.ffn_norm.register_forward_hook(
-                    make_rmsnorm_hook(f"layer_{layer_id:03d}_ffn_norm")))
             if hasattr(block, "attention"):
                 attn = block.attention
                 hooks.append(attn.register_forward_hook(
@@ -625,22 +622,12 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                 ff = block.feed_forward
                 hooks.append(ff.register_forward_hook(
                     make_hook(f"layer_{layer_id:03d}_ffn")))
-                # ffn_input = feed_forward.forward 收到的张量（pre-FFN/MoE 内部）
-                hooks.append(ff.register_forward_hook(
-                    make_input_hook(f"layer_{layer_id:03d}_ffn_input")))
-                # Dense path: feed_forward == FeedForward (w1 + SwiGLU + w2)
-                #   Note: with fuse_activation_w2=True, w2 input is 2F (pre-SwiGLU),
-                #   not F (post-SwiGLU) — Megatron's linear_fc2 input is F. The
-                #   `ffn_pre_w2` files at the two sides therefore sit at different
-                #   semantic positions; treat the diff accordingly.
                 if hasattr(ff, "w1"):
                     hooks.append(ff.w1.register_forward_hook(
                         make_hook(f"layer_{layer_id:03d}_ffn_w1_out")))
                 if hasattr(ff, "w2"):
-                    hooks.append(ff.w1.register_forward_hook(
-                        make_hook(f"layer_{layer_id:03d}_ffn_w2_out")))
                     hooks.append(ff.w2.register_forward_hook(
-                        make_input_hook(f"layer_{layer_id:03d}_ffn_w2_input")))
+                        make_hook(f"layer_{layer_id:03d}_ffn_w2_out")))
                 # MoE path: feed_forward == MoeShareExpertFFN (moe + share_expert)
                 #   moe.gate dumps pre-activation logits;
                 #   Megatron's TopKRouter dumps post-activation probs +
