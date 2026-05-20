@@ -1,10 +1,87 @@
 """Attention core implementations for SteptronOss."""
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from steptronoss.utils.optimizable import optimizable
+
+
+@torch._dynamo.disable
+def _maybe_save_sdpa_io(
+    module,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask,
+    is_causal: bool,
+    dropout_p: float,
+    out: torch.Tensor,
+) -> None:
+    """Dump SDPA inputs/output to ``STEPTRON_SAVE_INTERMEDIATE_PATH`` for cross-framework diff.
+
+    Files (per (layer, sdpa-call)):
+        layer_NNN_attention_core_sdpa_callC_{q,k,v,output}.pt   tensors
+        layer_NNN_attention_core_sdpa_callC_mask.pt             only when attn_mask is a Tensor
+        layer_NNN_attention_core_sdpa_callC_meta.pt             dict with is_causal, dropout_p, shapes, dtypes
+
+    Idempotent: existing files are not overwritten so backward recompute / multi-iter runs
+    don't pollute the dump. ``module.layer_id`` is set by ``GroupedQueryAttention`` on the
+    enclosing attention; if absent we skip silently.
+    """
+    save_dir = os.environ.get("STEPTRON_SAVE_INTERMEDIATE_PATH")
+    if not save_dir:
+        return
+    layer_id = getattr(module, "layer_id", None)
+    if layer_id is None:
+        return
+
+    call_idx = getattr(module, "_sdpa_call_counter", 0)
+    module._sdpa_call_counter = call_idx + 1
+
+    os.makedirs(save_dir, exist_ok=True)
+    prefix = f"layer_{int(layer_id):03d}_attention_core_sdpa_call{call_idx}"
+
+    def _save(tensor, name):
+        path = os.path.join(save_dir, f"{prefix}_{name}.pt")
+        if os.path.exists(path):
+            return
+        torch.save(tensor.detach().cpu(), path)
+        tf = tensor.detach().float()
+        print(
+            f"[ALIGN] sdpa_io saved {prefix}_{name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}",
+            flush=True,
+        )
+        print(
+            f"[ALIGN] sdpa_io stats {prefix}_{name}: min={tf.min():.6f}  max={tf.max():.6f}  mean={tf.mean():.6f}  std={tf.std():.6f}",
+            flush=True,
+        )
+        print(f"[ALIGN] sdpa_io {prefix}_{name}: {tensor}", flush=True)
+
+    _save(q, "q")
+    _save(k, "k")
+    _save(v, "v")
+    if isinstance(attn_mask, torch.Tensor):
+        _save(attn_mask, "mask")
+    _save(out, "output")
+
+    meta_path = os.path.join(save_dir, f"{prefix}_meta.pt")
+    if not os.path.exists(meta_path):
+        meta = {
+            "is_causal": bool(is_causal),
+            "dropout_p": float(dropout_p),
+            "attn_mask_is_none": attn_mask is None,
+            "attn_mask_dtype": str(attn_mask.dtype) if isinstance(attn_mask, torch.Tensor) else None,
+            "attn_mask_shape": tuple(attn_mask.shape) if isinstance(attn_mask, torch.Tensor) else None,
+            "q_shape": tuple(q.shape), "q_dtype": str(q.dtype),
+            "k_shape": tuple(k.shape), "k_dtype": str(k.dtype),
+            "v_shape": tuple(v.shape), "v_dtype": str(v.dtype),
+            "out_shape": tuple(out.shape), "out_dtype": str(out.dtype),
+        }
+        torch.save(meta, meta_path)
+        print(f"[ALIGN] sdpa_io meta {prefix}: {meta}", flush=True)
 
 
 @torch.no_grad()
@@ -322,14 +399,17 @@ class AttentionCore(nn.Module):
         is_causal: bool,
         attn_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        return F.scaled_dot_product_attention(
+        dropout_p = self.attention_dropout if self.training else 0.0
+        out = F.scaled_dot_product_attention(
             q,
             k,
             v,
             attn_mask=attn_mask,
-            dropout_p=self.attention_dropout if self.training else 0.0,
+            dropout_p=dropout_p,
             is_causal=is_causal,
         )
+        _maybe_save_sdpa_io(self, q, k, v, attn_mask, is_causal, dropout_p, out)
+        return out
 
     def forward(
         self,
@@ -340,6 +420,9 @@ class AttentionCore(nn.Module):
         max_seq_len: int | None = None,
     ) -> torch.Tensor:
         """Compute SDPA attention with FlashAttention-compatible inputs/outputs."""
+        # Reset per-forward sdpa call counter so dumps are idempotent across
+        # forward/backward recompute and multi-iter runs.
+        self._sdpa_call_counter = 0
         batch_size, seq_len, num_heads, head_dim = q.shape
         k, v = self._maybe_expand_kv(k, v, num_heads)
 

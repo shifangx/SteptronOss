@@ -124,6 +124,7 @@ class GroupedQueryAttention(torch.nn.Module):
             attention_dropout=self.cfg.attention_dropout,
             sliding_window=(self.cfg.sliding_window_size if self.sliding_window else -1),
         )
+        self.core_attention.layer_id = self.layer_id
         self.use_qk_norm = not cfg.use_qk_norm
         if self.use_qk_norm:
             self.q_norm = RMSNorm(
