@@ -200,9 +200,19 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
     Saves per-layer: embedding output, each layer's attention output (pre-residual),
     each layer's feed_forward output (pre-residual). Tensors are in SteptronOss layout [B, S, H].
     Triggered by env var STEPTRON_SAVE_INTERMEDIATE_PATH pointing to an output directory.
+
+    Two orthogonal env-var switches further select WHICH activations get dumped
+    (both default to "1" for backwards compatibility):
+      - DUMP_BLOCK_IO=1  : top-level block outputs — embedding, layer_NNN_attention,
+                           layer_NNN_ffn (matches the first 3 columns of the
+                           compare_intermediates.log header).
+      - DUMP_FINEGRAIN=1 : every other fine-grained tensor (norms, qkv splits,
+                           rope, sdpa I/O, MoE router/expert, w1/w2 outs, ...).
     """
     import os
 
+    dump_block_io = os.environ.get("DUMP_BLOCK_IO", "1") == "1"
+    dump_finegrain = os.environ.get("DUMP_FINEGRAIN", "1") == "1"
     os.makedirs(save_dir, exist_ok=True)
 
     def make_hook(name: str):
@@ -564,8 +574,9 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
     hooks = []
 
     if hasattr(base_model, "tok_embeddings"):
-        hooks.append(base_model.tok_embeddings.register_forward_hook(make_hook("embedding")))
-        if hasattr(base_model.tok_embeddings, "word_embeddings"):
+        if dump_block_io:
+            hooks.append(base_model.tok_embeddings.register_forward_hook(make_hook("embedding")))
+        if dump_finegrain and hasattr(base_model.tok_embeddings, "word_embeddings"):
             hooks.append(base_model.tok_embeddings.word_embeddings.register_forward_hook(
                 make_input_hook("embedding_input_ids")))
 
@@ -576,76 +587,80 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             layer_id = getattr(block, "layer_id", None)
             if layer_id is None:
                 continue
-            if hasattr(block, "attention_norm"):
+            if dump_finegrain and hasattr(block, "attention_norm"):
                 hooks.append(block.attention_norm.register_forward_hook(
                     make_rmsnorm_hook(f"layer_{layer_id:03d}_attention_norm")))
             if hasattr(block, "attention"):
                 attn = block.attention
-                hooks.append(attn.register_forward_hook(
-                    make_hook(f"layer_{layer_id:03d}_attention")))
-                if hasattr(attn, "wqkv"):
-                    hooks.append(attn.wqkv.register_forward_hook(
-                        make_wqkv_split_hook(
-                            attn,
-                            f"layer_{layer_id:03d}_attention_qkv",
-                            f"layer_{layer_id:03d}_attention_qkv_gate",
-                        )))
-                if getattr(attn, "q_norm", None) is not None:
-                    hooks.append(attn.q_norm.register_forward_hook(
-                        make_hook(f"layer_{layer_id:03d}_attention_qnorm")))
-                if getattr(attn, "k_norm", None) is not None:
-                    hooks.append(attn.k_norm.register_forward_hook(
-                        make_hook(f"layer_{layer_id:03d}_attention_knorm")))
-                if hasattr(attn, "core_attention"):
-                    hooks.append(attn.core_attention.register_forward_hook(
-                        make_hook(f"layer_{layer_id:03d}_attention_core")))
-                    hooks.append(attn.core_attention.register_forward_pre_hook(
-                        make_core_attn_pre_hook(f"layer_{layer_id:03d}_attention_qkv"),
-                        with_kwargs=True,
-                    ))
-                    # Dedicated I/O dump at the core_attention boundary:
-                    # writes _input_q / _input_k / _input_v / _output for direct diff.
-                    _core_pre, _core_post = make_core_attention_io_hook(
-                        f"layer_{layer_id:03d}_attention_core"
-                    )
-                    hooks.append(attn.core_attention.register_forward_pre_hook(
-                        _core_pre, with_kwargs=True,
-                    ))
-                    hooks.append(attn.core_attention.register_forward_hook(_core_post))
-                if getattr(attn, "rope", None) is not None:
-                    hooks.append(attn.rope.register_forward_hook(
-                        make_rope_cos_sin_hook(f"layer_{layer_id:03d}_attention_rope")))
-                if hasattr(attn, "wo"):
-                    hooks.append(attn.wo.register_forward_hook(
-                        make_input_hook(f"layer_{layer_id:03d}_attention_preproj")))
+                if dump_block_io:
+                    hooks.append(attn.register_forward_hook(
+                        make_hook(f"layer_{layer_id:03d}_attention")))
+                if dump_finegrain:
+                    if hasattr(attn, "wqkv"):
+                        hooks.append(attn.wqkv.register_forward_hook(
+                            make_wqkv_split_hook(
+                                attn,
+                                f"layer_{layer_id:03d}_attention_qkv",
+                                f"layer_{layer_id:03d}_attention_qkv_gate",
+                            )))
+                    if getattr(attn, "q_norm", None) is not None:
+                        hooks.append(attn.q_norm.register_forward_hook(
+                            make_hook(f"layer_{layer_id:03d}_attention_qnorm")))
+                    if getattr(attn, "k_norm", None) is not None:
+                        hooks.append(attn.k_norm.register_forward_hook(
+                            make_hook(f"layer_{layer_id:03d}_attention_knorm")))
+                    if hasattr(attn, "core_attention"):
+                        hooks.append(attn.core_attention.register_forward_hook(
+                            make_hook(f"layer_{layer_id:03d}_attention_core")))
+                        hooks.append(attn.core_attention.register_forward_pre_hook(
+                            make_core_attn_pre_hook(f"layer_{layer_id:03d}_attention_qkv"),
+                            with_kwargs=True,
+                        ))
+                        # Dedicated I/O dump at the core_attention boundary:
+                        # writes _input_q / _input_k / _input_v / _output for direct diff.
+                        _core_pre, _core_post = make_core_attention_io_hook(
+                            f"layer_{layer_id:03d}_attention_core"
+                        )
+                        hooks.append(attn.core_attention.register_forward_pre_hook(
+                            _core_pre, with_kwargs=True,
+                        ))
+                        hooks.append(attn.core_attention.register_forward_hook(_core_post))
+                    if getattr(attn, "rope", None) is not None:
+                        hooks.append(attn.rope.register_forward_hook(
+                            make_rope_cos_sin_hook(f"layer_{layer_id:03d}_attention_rope")))
+                    if hasattr(attn, "wo"):
+                        hooks.append(attn.wo.register_forward_hook(
+                            make_input_hook(f"layer_{layer_id:03d}_attention_preproj")))
             if hasattr(block, "feed_forward"):
                 ff = block.feed_forward
-                hooks.append(ff.register_forward_hook(
-                    make_hook(f"layer_{layer_id:03d}_ffn")))
-                if hasattr(ff, "w1"):
-                    hooks.append(ff.w1.register_forward_hook(
-                        make_hook(f"layer_{layer_id:03d}_ffn_w1_out")))
-                if hasattr(ff, "w2"):
-                    hooks.append(ff.w2.register_forward_hook(
-                        make_hook(f"layer_{layer_id:03d}_ffn_w2_out")))
-                # MoE path: feed_forward == MoeShareExpertFFN (moe + share_expert)
-                #   moe.gate dumps pre-activation logits;
-                #   Megatron's TopKRouter dumps post-activation probs +
-                #   routing_map under the same `ffn_router` prefix.
-                if hasattr(ff, "moe"):
-                    moe = ff.moe
-                    if hasattr(moe, "gate"):
-                        hooks.append(moe.gate.register_forward_hook(
-                            make_hook(f"layer_{layer_id:03d}_ffn_router_logits")))
-                    if hasattr(moe, "experts"):
-                        hooks.append(moe.experts.register_forward_hook(
-                            make_hook(f"layer_{layer_id:03d}_ffn_expert_out")))
-                    if hasattr(moe, "experts"):
-                        hooks.append(moe.experts.register_forward_hook(
-                            make_input_hook(f"layer_{layer_id:03d}_ffn_expert_input")))
-                if hasattr(ff, "share_expert"):
-                    hooks.append(ff.share_expert.register_forward_hook(
-                        make_hook(f"layer_{layer_id:03d}_ffn_shared_out")))
+                if dump_block_io:
+                    hooks.append(ff.register_forward_hook(
+                        make_hook(f"layer_{layer_id:03d}_ffn")))
+                if dump_finegrain:
+                    if hasattr(ff, "w1"):
+                        hooks.append(ff.w1.register_forward_hook(
+                            make_hook(f"layer_{layer_id:03d}_ffn_w1_out")))
+                    if hasattr(ff, "w2"):
+                        hooks.append(ff.w2.register_forward_hook(
+                            make_hook(f"layer_{layer_id:03d}_ffn_w2_out")))
+                    # MoE path: feed_forward == MoeShareExpertFFN (moe + share_expert)
+                    #   moe.gate dumps pre-activation logits;
+                    #   Megatron's TopKRouter dumps post-activation probs +
+                    #   routing_map under the same `ffn_router` prefix.
+                    if hasattr(ff, "moe"):
+                        moe = ff.moe
+                        if hasattr(moe, "gate"):
+                            hooks.append(moe.gate.register_forward_hook(
+                                make_hook(f"layer_{layer_id:03d}_ffn_router_logits")))
+                        if hasattr(moe, "experts"):
+                            hooks.append(moe.experts.register_forward_hook(
+                                make_hook(f"layer_{layer_id:03d}_ffn_expert_out")))
+                        if hasattr(moe, "experts"):
+                            hooks.append(moe.experts.register_forward_hook(
+                                make_input_hook(f"layer_{layer_id:03d}_ffn_expert_input")))
+                    if hasattr(ff, "share_expert"):
+                        hooks.append(ff.share_expert.register_forward_hook(
+                            make_hook(f"layer_{layer_id:03d}_ffn_shared_out")))
 
     return hooks
 

@@ -43,6 +43,10 @@ def _maybe_dump_moe_io(tensor: torch.Tensor, name: str) -> None:
     """
     if PM.world_rank != 0:
         return
+    # Fine-grained dump: gated by DUMP_FINEGRAIN so DUMP_BLOCK_IO-only runs
+    # skip MoE-internal tensors (kept on by default for backwards compatibility).
+    if os.environ.get("DUMP_FINEGRAIN", "1") != "1":
+        return
     if not isinstance(tensor, torch.Tensor):
         return
     save_dir = os.environ.get("STEPTRON_SAVE_INTERMEDIATE_PATH")

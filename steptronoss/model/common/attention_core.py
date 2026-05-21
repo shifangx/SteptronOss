@@ -34,6 +34,10 @@ def _maybe_save_sdpa_io(
     """
     if PM.world_rank != 0:
         return
+    # Fine-grained dump: gated by DUMP_FINEGRAIN so DUMP_BLOCK_IO-only runs
+    # skip per-SDPA-call I/O (kept on by default for backwards compatibility).
+    if os.environ.get("DUMP_FINEGRAIN", "1") != "1":
+        return
     save_dir = os.environ.get("STEPTRON_SAVE_INTERMEDIATE_PATH")
     if not save_dir:
         return
