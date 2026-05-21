@@ -260,8 +260,8 @@ class YARNRoPE(torch.nn.Module):
         replays (which re-enter forward) and multi-step runs from creating extra
         files. Existing files are not overwritten, so the first forward wins.
         """
-        if PM.world_rank != 0:
-            return
+        # if PM.world_rank != 0:
+        #     return
         save_dir = os.environ.get("STEPTRON_SAVE_ROPE_PATH")
         if not save_dir:
             return
