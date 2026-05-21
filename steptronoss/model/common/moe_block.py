@@ -1,5 +1,6 @@
 """Copyright 2026 StepFun Inc. All Rights Reserved."""
 
+import os
 from collections.abc import Callable
 from functools import cached_property, partial
 
@@ -30,6 +31,43 @@ from steptronoss.timers import timeit
 from steptronoss.utils.metrics import GlobalMetrics
 
 GlobalMetrics: MoePretrainMetricConfig
+
+
+@torch._dynamo.disable
+def _maybe_dump_moe_io(tensor: torch.Tensor, name: str) -> None:
+    """Dump a MoE router/expert tensor to ``STEPTRON_SAVE_INTERMEDIATE_PATH`` for cross-framework diff.
+
+    Mirrors Megatron-Bridge ``step35_bridge._maybe_dump_moe_io`` so the produced files
+    (e.g. ``layer_NNN_ffn_router_topk_ids.pt`` / ``..._topk_weights.pt``) line up name-for-name
+    with the MBridge side. Idempotent: existing files are not overwritten.
+    """
+    if PM.world_rank != 0:
+        return
+    if not isinstance(tensor, torch.Tensor):
+        return
+    save_dir = os.environ.get("STEPTRON_SAVE_INTERMEDIATE_PATH")
+    if not save_dir:
+        return
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, f"{name}.pt")
+    if os.path.exists(path):
+        return
+    t = tensor.detach().cpu()
+    torch.save(t, path)
+    if t.is_floating_point():
+        tf = t.float()
+        print(
+            f"[ALIGN] moe_io saved {name}: shape={tuple(t.shape)}, dtype={t.dtype}  "
+            f"min={tf.min():.6f}  max={tf.max():.6f}  mean={tf.mean():.6f}  std={tf.std():.6f}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[ALIGN] moe_io saved {name}: shape={tuple(t.shape)}, dtype={t.dtype}  "
+            f"min={int(t.min())}  max={int(t.max())}",
+            flush=True,
+        )
+    print(f"[ALIGN] moe_io {name}: {t}", flush=True)
 
 
 def activation_backward(pre_func_output, grad_input, detached_inputs):
@@ -179,6 +217,9 @@ class MoEBlock(nn.Module):
 
         self.sequence_parallel = cfg.tp_cfg.sequence_parallel
 
+        # Global 0-indexed transformer layer id; needed by the align dump path
+        # so file names line up with Megatron-Bridge's ``layer_NNN_*`` convention.
+        self.layer_id = layer_id
         self.moe_layer_id = cfg.moe_layer_list.index(layer_id)
 
         self.moe_aux_loss_coef = cfg.moe_aux_loss_coef
@@ -224,6 +265,10 @@ class MoEBlock(nn.Module):
     @timeit(level=2)
     def forward_router(self, logits: torch.FloatTensor):
         logits = logits.float()  # S, global_experts. where S is ONE full sample
+        print(f"for debug, layer_number: {self.layer_id}, in MoEBlock.forward_router, self.use_sigmoid_router is {self.use_sigmoid_router}")
+        print(f"for debug, layer_number: {self.layer_id}, in MoEBlock.forward_router, self.norm_expert_weight is {self.norm_expert_weight}")
+        print(f"for debug, layer_number: {self.layer_id}, in MoEBlock.forward_router, self.cfg.enable_auxiliary_loss_free_load_balanceis {self.cfg.enable_auxiliary_loss_free_load_balance}")
+        print(f"for debug, layer_number: {self.layer_id}, in MoEBlock.forward_router, self.cfg.force_balance is {self.cfg.force_balance}")
 
         # Activation of logits
         if self.use_sigmoid_router:
@@ -270,6 +315,12 @@ class MoEBlock(nn.Module):
             token_weights = token_weights / (
                 torch.sum(topk_prob, dim=-1, keepdim=True) + (1e-20 if self.router_balance_bias is not None else 0)
             )
+
+        _layer_id = getattr(self, "layer_id", None)
+        _prefix = f"layer_{int(_layer_id):03d}" if _layer_id is not None else None
+        if _prefix is not None:
+            _maybe_dump_moe_io(topk_expert_ids, f"{_prefix}_ffn_router_topk_ids")
+            _maybe_dump_moe_io(token_weights, f"{_prefix}_ffn_router_topk_weights")
 
         with timeit("moe-aux-loss", level=2):
             experts_histogram = histogram(topk_expert_ids, self.num_global_experts)
@@ -410,6 +461,7 @@ class MoEBlock(nn.Module):
         output = output.reshape(S, B, output.shape[-1])
 
         output = bind_aux_loss(output, aux_loss)
+        print(f"for debug, layer_number: {self.layer_id}, in MoEBlock.forward, self.routed_scaling_factor is {self.routed_scaling_factor}")
         output = output * self.routed_scaling_factor
 
         GlobalMetrics.moe_aux_loss.add(

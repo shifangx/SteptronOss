@@ -640,6 +640,9 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                     if hasattr(moe, "experts"):
                         hooks.append(moe.experts.register_forward_hook(
                             make_hook(f"layer_{layer_id:03d}_ffn_expert_out")))
+                    if hasattr(moe, "experts"):
+                        hooks.append(moe.experts.register_forward_hook(
+                            make_input_hook(f"layer_{layer_id:03d}_ffn_expert_input")))
                 if hasattr(ff, "share_expert"):
                     hooks.append(ff.share_expert.register_forward_hook(
                         make_hook(f"layer_{layer_id:03d}_ffn_shared_out")))

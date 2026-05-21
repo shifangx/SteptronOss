@@ -214,11 +214,11 @@ def index_compute(indices: torch.Tensor, expert_histogram: torch.Tensor) -> torc
     return flat_out.reshape_as(out).to(torch.int32)
 
 
-@optimizable(
-    alternatives={
-        "fused": triton_routed_grouped_ffn_fused,
-    }
-)
+# @optimizable(
+#     alternatives={
+#         "fused": triton_routed_grouped_ffn_fused,
+#     }
+# )
 def routed_grouped_ffn(
     w1: torch.Tensor,
     w2: torch.Tensor,
