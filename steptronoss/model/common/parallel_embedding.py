@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import torch
 from configurize import Config, Ref
 from loguru import logger
@@ -7,6 +9,46 @@ from loguru import logger
 from steptronoss.core import tensor_parallel
 from steptronoss.exp.base_exp import MegatronTPConfig
 from steptronoss.model.common.rms_norm import RMSNorm
+
+
+@torch._dynamo.disable
+def _maybe_dump_lmhead(tensor: torch.Tensor, name: str) -> None:
+    """Dump an lm-head-path tensor to STEPTRON_SAVE_INTERMEDIATE_PATH.
+
+    Gated by DUMP_LMHEAD so it's only active during alignment runs. Idempotent
+    (existing files are not overwritten), so the first forward wins across
+    replay / recompute / multi-iter loops.
+    """
+    if os.environ.get("DUMP_LMHEAD", "0") != "1":
+        return
+    save_dir = os.environ.get("STEPTRON_SAVE_INTERMEDIATE_PATH")
+    if not save_dir:
+        return
+    if not isinstance(tensor, torch.Tensor):
+        return
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, f"{name}.pt")
+    if os.path.exists(path):
+        print(
+            f"[ALIGN] lmhead skip {name} (file already exists, expected with multi-rank): {path}",
+            flush=True,
+        )
+        return
+    t = tensor.detach().cpu()
+    torch.save(t, path)
+    if t.is_floating_point():
+        tf = t.float()
+        print(
+            f"[ALIGN] lmhead saved {name}: shape={tuple(t.shape)}, dtype={t.dtype}  "
+            f"min={tf.min():.6f}  max={tf.max():.6f}  mean={tf.mean():.6f}  std={tf.std():.6f}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[ALIGN] lmhead saved {name}: shape={tuple(t.shape)}, dtype={t.dtype}",
+            flush=True,
+        )
+    print(f"[ALIGN] lmhead {name}: {t}", flush=True)
 
 
 class InputEmbeddingConfig(Config):
@@ -109,7 +151,9 @@ class OutputEmbedding(torch.nn.Module):
 
     def forward(self, hidden_states, **kwargs):
         hidden_states = self.norm(hidden_states)
+        _maybe_dump_lmhead(hidden_states, "final_norm")
         output = self.output(hidden_states)[0]
+        _maybe_dump_lmhead(output, "lm_head_logits")
         return output
 
 

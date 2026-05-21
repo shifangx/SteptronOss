@@ -77,8 +77,6 @@ def _maybe_dump_moe_io(tensor, name: str) -> None:
     global rank 0 when ``torch.distributed`` is initialized, skips silently
     otherwise. Idempotent: existing files are not overwritten.
     """
-    if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
-        return
     # Fine-grained dump: gated by DUMP_FINEGRAIN so DUMP_BLOCK_IO-only runs
     # skip MoE-internal tensors (kept on by default for backwards compatibility).
     if os.environ.get("DUMP_FINEGRAIN", "1") != "1":
@@ -91,6 +89,10 @@ def _maybe_dump_moe_io(tensor, name: str) -> None:
     os.makedirs(save_dir, exist_ok=True)
     path = os.path.join(save_dir, f"{name}.pt")
     if os.path.exists(path):
+        print(
+            f"[ALIGN] moe_io skip {name} (file already exists, expected with multi-rank): {path}",
+            flush=True,
+        )
         return
     t = tensor.detach().cpu()
     torch.save(t, path)

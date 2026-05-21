@@ -219,9 +219,11 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         path = os.path.join(save_dir, f"{name}.pt")
 
         def hook(_module, _inp, out):
-            if PM.world_rank != 0:
-                return
             if os.path.exists(path):
+                print(
+                    f"[ALIGN] dump skip {name} (file already exists, expected with multi-rank): {path}",
+                    flush=True,
+                )
                 return
             tensor = out[0] if isinstance(out, (tuple, list)) else out
             if not isinstance(tensor, torch.Tensor):
@@ -248,9 +250,13 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         path = os.path.join(save_dir, f"{name}.pt")
 
         def hook(_module, inp, _out):
-            if PM.world_rank != 0:
+            if os.path.exists(path):
+                print(
+                    f"[ALIGN] dump skip {name} (file already exists, expected with multi-rank): {path}",
+                    flush=True,
+                )
                 return
-            if os.path.exists(path) or not inp:
+            if not inp:
                 return
             tensor = inp[0]
             if not isinstance(tensor, torch.Tensor):
@@ -272,8 +278,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         eff_weight_path = os.path.join(save_dir, f"{name}_effective_weight.pt")
 
         def hook(_module, _inp, out):
-            if PM.world_rank != 0:
-                return
             tensor = out[0] if isinstance(out, (tuple, list)) else out
             if isinstance(tensor, torch.Tensor) and not os.path.exists(out_path):
                 torch.save(tensor.detach().cpu(), out_path)
@@ -341,8 +345,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
         gate_weight_path = os.path.join(save_dir, f"{qkv_name}_weight_gate.pt")
 
         def hook(_module, inp, out):
-            if PM.world_rank != 0:
-                return
             tensor = out[0] if isinstance(out, (tuple, list)) else out
             if not isinstance(tensor, torch.Tensor):
                 return
@@ -460,8 +462,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             print(f"[ALIGN] {tag} {base}: {tensor}", flush=True)
 
         def hook(_module, args, kwargs):
-            if PM.world_rank != 0:
-                return
             xq = args[0] if len(args) >= 1 else kwargs.get("xq")
             xk = args[1] if len(args) >= 2 else kwargs.get("xk")
             xv = args[2] if len(args) >= 3 else kwargs.get("xv")
@@ -503,8 +503,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             print(f"[ALIGN] {tag} {base}: {tensor}", flush=True)
 
         def pre_hook(_module, args, kwargs):
-            if PM.world_rank != 0:
-                return
             xq = args[0] if len(args) >= 1 else kwargs.get("xq") or kwargs.get("q")
             xk = args[1] if len(args) >= 2 else kwargs.get("xk") or kwargs.get("k")
             xv = args[2] if len(args) >= 3 else kwargs.get("xv") or kwargs.get("v")
@@ -513,8 +511,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             _dump(xv, v_path, "core_attn_in_v")
 
         def post_hook(_module, _inp, out):
-            if PM.world_rank != 0:
-                return
             tensor = out[0] if isinstance(out, (tuple, list)) else out
             _dump(tensor, out_path, "core_attn_out")
 
@@ -544,8 +540,6 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
             return int(getattr(module, "_cached_seqlen", 0))
 
         def hook(_module, _inp, _out):
-            if PM.world_rank != 0:
-                return
             if os.path.exists(cos_path) and os.path.exists(sin_path):
                 return
             used_seqlen = _resolve_used_seqlen(_inp, _module)

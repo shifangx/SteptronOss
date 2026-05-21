@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from steptronoss.core.parallel_state import PM
 from steptronoss.utils.optimizable import optimizable
 
 
@@ -32,8 +31,6 @@ def _maybe_save_sdpa_io(
     don't pollute the dump. ``module.layer_id`` is set by ``GroupedQueryAttention`` on the
     enclosing attention; if absent we skip silently.
     """
-    if PM.world_rank != 0:
-        return
     # Fine-grained dump: gated by DUMP_FINEGRAIN so DUMP_BLOCK_IO-only runs
     # skip per-SDPA-call I/O (kept on by default for backwards compatibility).
     if os.environ.get("DUMP_FINEGRAIN", "1") != "1":
@@ -54,6 +51,10 @@ def _maybe_save_sdpa_io(
     def _save(tensor, name):
         path = os.path.join(save_dir, f"{prefix}_{name}.pt")
         if os.path.exists(path):
+            print(
+                f"[ALIGN] sdpa_io skip {prefix}_{name} (file already exists, expected with multi-rank): {path}",
+                flush=True,
+            )
             return
         torch.save(tensor.detach().cpu(), path)
         tf = tensor.detach().float()

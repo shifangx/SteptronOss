@@ -121,21 +121,26 @@ class NTPTrainerConfig(TrainerConfig):
             return logits
         from steptronoss.core.context_parallel import scatter_to_balanced_cp_region
         from steptronoss.core.tensor_parallel import vocab_parallel_cross_entropy
+        from steptronoss.model.common.parallel_embedding import _maybe_dump_lmhead
 
         # labels B, S, logits should be [S, B, V / tp]
         labels = data["labels"].transpose(1, 0).contiguous()
         labels = scatter_to_balanced_cp_region(labels, dim=0)
+        _maybe_dump_lmhead(labels, "labels")
         losses, acc = vocab_parallel_cross_entropy(logits.float(), labels)
 
         losses: torch.Tensor = losses.transpose(1, 0).contiguous()  # make B, S
+        _maybe_dump_lmhead(losses, "lm_loss_per_token")
 
         loss_masks = data.get("loss_masks")
         if loss_masks is None and "loss_mask" in data:
             raise RuntimeError("Critical Typo: please use 'loss_masks' instead of 'loss_mask' in data!")
         if loss_masks is not None:
+            _maybe_dump_lmhead(loss_masks, "loss_mask")
             loss = self.apply_loss_mask(losses, loss_masks)
         else:
             loss = losses.mean()
+        _maybe_dump_lmhead(loss, "lm_loss")
 
         GlobalMetrics.losses.add(losses, iop=lambda x: x.detach())
         GlobalMetrics.lm_loss.add(loss, iop=lambda x: x.detach())
