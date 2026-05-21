@@ -1,3 +1,5 @@
+import os
+
 import torch
 
 try:
@@ -59,6 +61,49 @@ except:
 from steptronoss.timers import timeit
 from steptronoss.utils.memory_tracker import CMT
 from steptronoss.utils.optimizable import optimizable
+
+
+@torch._dynamo.disable
+def _maybe_dump_moe_io(tensor, name: str) -> None:
+    """Dump a MoE routed-FFN tensor to ``STEPTRON_SAVE_INTERMEDIATE_PATH``.
+
+    Used by ``routed_grouped_ffn`` (and callers that want to surface their
+    own pre/post-state) to produce ``layer_NNN_ffn_experts_*.pt`` files
+    matching the names that MBridge ``MoELayer_debug.forward`` writes on its
+    own routed-experts path — so ``compare_intermediate_activations.py`` can
+    diff them 1:1.
+
+    Self-contained on purpose (no PM / distributed dependency): gated to
+    global rank 0 when ``torch.distributed`` is initialized, skips silently
+    otherwise. Idempotent: existing files are not overwritten.
+    """
+    if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+        return
+    if not isinstance(tensor, torch.Tensor):
+        return
+    save_dir = os.environ.get("STEPTRON_SAVE_INTERMEDIATE_PATH")
+    if not save_dir:
+        return
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, f"{name}.pt")
+    if os.path.exists(path):
+        return
+    t = tensor.detach().cpu()
+    torch.save(t, path)
+    if t.is_floating_point():
+        tf = t.float()
+        print(
+            f"[ALIGN] moe_io saved {name}: shape={tuple(t.shape)}, dtype={t.dtype}  "
+            f"min={tf.min():.6f}  max={tf.max():.6f}  mean={tf.mean():.6f}  std={tf.std():.6f}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[ALIGN] moe_io saved {name}: shape={tuple(t.shape)}, dtype={t.dtype}  "
+            f"min={int(t.min())}  max={int(t.max())}",
+            flush=True,
+        )
+    print(f"[ALIGN] moe_io {name}: {t}", flush=True)
 
 
 class MoEGateFunction(torch.autograd.Function):
@@ -226,21 +271,50 @@ def routed_grouped_ffn(
     x: torch.Tensor,
     token_expert_ids: torch.Tensor,
     token_weights: torch.Tensor,
+    layer_id: int | None = None,
 ) -> torch.Tensor:
+    # Align-mode dump prefix. Caller (GroupedExperts.forward) passes the
+    # global 0-indexed transformer layer id; MBridge's MoELayer_debug uses
+    # the same convention so file names line up for diffing.
+    _prefix = f"layer_{int(layer_id):03d}" if layer_id is not None else None
+    if _prefix is not None:
+        _maybe_dump_moe_io(x, f"{_prefix}_ffn_experts_x_input")
+        _maybe_dump_moe_io(w1, f"{_prefix}_ffn_experts_w1")
+        _maybe_dump_moe_io(w2, f"{_prefix}_ffn_experts_w2")
+        _maybe_dump_moe_io(token_expert_ids, f"{_prefix}_ffn_experts_topk_ids_input")
+        _maybe_dump_moe_io(token_weights, f"{_prefix}_ffn_experts_topk_weights_input")
+
     experts_histogram = histogram(token_expert_ids, w1.shape[0])
+    if _prefix is not None:
+        _maybe_dump_moe_io(experts_histogram, f"{_prefix}_ffn_experts_histogram")
     if experts_histogram.numel() == 0 or int(experts_histogram.sum().item()) == 0:
-        return x * token_weights.sum()
+        out = x * token_weights.sum()
+        if _prefix is not None:
+            _maybe_dump_moe_io(out, f"{_prefix}_ffn_experts_output")
+        return out
     batch_sizes = experts_histogram.long()
     with timeit("moe-compute-index", level=2):
         scatter_index = index_compute(token_expert_ids, experts_histogram)
+    if _prefix is not None:
+        _maybe_dump_moe_io(scatter_index, f"{_prefix}_ffn_experts_scatter_index")
     with timeit("moe-scatter", level=2):
         x = moe_scatter(x, scatter_index)
+    if _prefix is not None:
+        _maybe_dump_moe_io(x, f"{_prefix}_ffn_experts_after_scatter")
     with timeit("moe-grouped-gemm-act", level=2):
         x = grouped_gemm(x, w1, batch_sizes=batch_sizes, trans_b=True)
+        if _prefix is not None:
+            _maybe_dump_moe_io(x, f"{_prefix}_ffn_experts_after_gemm1")
         x = act(x)
+        if _prefix is not None:
+            _maybe_dump_moe_io(x, f"{_prefix}_ffn_experts_after_act")
         x = grouped_gemm(x, w2, batch_sizes=batch_sizes, trans_b=True)
+        if _prefix is not None:
+            _maybe_dump_moe_io(x, f"{_prefix}_ffn_experts_after_gemm2")
     with timeit("moe-gather", level=2):
         x = moe_weighted_gather(x, scatter_index, token_weights)
+    if _prefix is not None:
+        _maybe_dump_moe_io(x, f"{_prefix}_ffn_experts_output")
     return x
 
 

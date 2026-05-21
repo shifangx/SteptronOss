@@ -201,6 +201,7 @@ class GroupedExperts(torch.nn.Module):
             x,
             token_expert_ids,
             token_weights,
+            layer_id=self.layer_id,
         )
 
         x = reduce_from_tensor_model_parallel_region(x, group="ETP")
