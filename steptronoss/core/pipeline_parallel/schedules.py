@@ -267,6 +267,51 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
 
         return hook
 
+    def make_wo_postgate_pre_hook(name: str):
+        """forward_pre_hook on ``attn.wo`` that captures the **post-gate, pre-linear**
+        tensor — i.e., the value F.linear sees inside wo's autograd Function after
+        ``head_wise_attn_gate_function`` has been applied.
+
+        SteptronOss applies the head-wise gate via
+        ``LinearWithGradAccumulationAndAsyncCommunicationWithPrefunction``'s
+        ``custom_pre_recompute_function``, so the standard module-input hook
+        captures the **pre-gate** tensor. Megatron-Bridge applies the gate inside
+        ``attention.py`` *before* ``linear_proj`` is invoked, so its
+        ``attention_preproj`` capture is **post-gate**. To make the two
+        bit-for-bit comparable, we replay ``head_wise_attn_gate_function``
+        here (see ``grouped_query_attention.py:171-177``).
+        """
+        path = os.path.join(save_dir, f"{name}.pt")
+
+        def hook(_module, args, kwargs):
+            if os.path.exists(path):
+                print(
+                    f"[ALIGN] dump skip {name} (file already exists, expected with multi-rank): {path}",
+                    flush=True,
+                )
+                return
+            if not args:
+                return
+            tensor = args[0]
+            if not isinstance(tensor, torch.Tensor):
+                return
+            gate_weight = kwargs.get("custom_pre_recompute_function_input")
+            if isinstance(gate_weight, torch.Tensor):
+                S, B = tensor.shape[:2]
+                nh = gate_weight.shape[-1]
+                hd = tensor.shape[-1] // nh
+                attn_out = tensor.view(S, B, nh, hd)
+                attn_out = attn_out * gate_weight.unsqueeze(-1).sigmoid()
+                tensor = attn_out.view(S, B, -1)
+            torch.save(tensor.detach().cpu(), path)
+            print(
+                f"[ALIGN] input(post-gate) saved {name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}",
+                flush=True,
+            )
+            print(f"[ALIGN] input(post-gate) {name}: {tensor}", flush=True)
+
+        return hook
+
     def make_rmsnorm_hook(name: str):
         """RMSNorm 专用 hook：保存输出、权重，并打印 eps / use_fp32 / bias 等关键配置。
 
@@ -623,8 +668,10 @@ def _build_intermediate_hooks(model, save_dir: str) -> list:
                         hooks.append(attn.rope.register_forward_hook(
                             make_rope_cos_sin_hook(f"layer_{layer_id:03d}_attention_rope")))
                     if hasattr(attn, "wo"):
-                        hooks.append(attn.wo.register_forward_hook(
-                            make_input_hook(f"layer_{layer_id:03d}_attention_preproj")))
+                        hooks.append(attn.wo.register_forward_pre_hook(
+                            make_wo_postgate_pre_hook(f"layer_{layer_id:03d}_attention_preproj"),
+                            with_kwargs=True,
+                        ))
             if hasattr(block, "feed_forward"):
                 ff = block.feed_forward
                 if dump_block_io:
