@@ -184,7 +184,7 @@ class Exp(BaseExp):
     """Step3.7 smoke run over a tiny open-source Flickr8k image-caption slice."""
 
     log_dir = "./runs/step3p7_sft_flickr8k_smoke/tensorboard"
-    resource_cfg = Step3p7Flickr8kResourceConfig
+    # resource_cfg = Step3p7Flickr8kResourceConfig
     model_cfg = Step3p7OpenSourceSmokeModelConfig
     trainer_cfg = Step3p7OpenSourceSmokeTrainerConfig
     metric_cfg = MoePretrainMetricConfig
