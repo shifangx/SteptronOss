@@ -198,6 +198,8 @@ class ImageInsertEmbedding(WordEmbedding):
         if not images:
             return input_embeddings
 
+        images_in_snapshot = list(images)  # captured pre-projection for STAGE ⑥ dump
+
         target_dtype = self.align_projector.weight.dtype
         target_device = self.align_projector.weight.device
         for insert_image in images:
@@ -221,6 +223,22 @@ class ImageInsertEmbedding(WordEmbedding):
                 input_ids=input_ids,
                 flag=insert_image.insert_start_token,
             )
+
+        # STAGE ⑥: dump fused LLM input embedding. Lazy import + try/except
+        # keeps the core framework decoupled from playground; full no-op when
+        # STEP3P7_DUMP_DIR is unset or playground isn't on PYTHONPATH.
+        try:
+            from playground.data.sft.step3p7 import _dump as _step3p7_dump
+        except ImportError:
+            _step3p7_dump = None
+        if _step3p7_dump is not None and _step3p7_dump.dump_enabled():
+            _step3p7_dump.dump_llm_input_embeddings(
+                input_ids=input_ids,
+                input_embeddings=input_embeddings,
+                images_in=images_in_snapshot,
+                align_projector=self.align_projector,
+            )
+
         return input_embeddings
 
 

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from playground.data.sft.step3p7 import _dump
 from playground.data.sft.step3p7.step3p7_multimodal_sft_data import (
     IMAGE_PLACEHOLDER,
     Step3p7MultimodalSFTDataConfig,
@@ -33,7 +34,12 @@ class Step3p7Flickr8kDataset:
 
     def __getitem__(self, idx: int):
         sample = self.samples[idx]
-        return self.template(self._to_dialog(sample, self.prompt))
+        dialog = self._to_dialog(sample, self.prompt)
+        result = self.template(dialog)
+        if _dump.dump_enabled():
+            tokenizer = getattr(self.template, "tokenizer", None)
+            _dump.dump_dataset_item(idx, dialog, dict(result), tokenizer=tokenizer)
+        return result
 
     @staticmethod
     def _to_dialog(sample: Flickr8kSample, prompt: str) -> dict[str, Any]:
@@ -113,6 +119,7 @@ class Step3p7Flickr8kSFTDatasetsConfig(Step3p7MultimodalSFTDatasetsConfig):
 
         if not samples:
             raise RuntimeError(f"No Flickr8k samples prepared from {self.repo_id}/{self.split}")
+        _dump.dump_samples(samples, repo_id=self.repo_id, split=self.split)
         return samples
 
     def build_datasets(self) -> dict[str, tuple[Any, float]]:

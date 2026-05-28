@@ -99,6 +99,7 @@ class ImageInsertDecoderMixin:
         if not images:
             return images
 
+        before_snapshot = list(images)  # captured pre-encode for STAGE ⑤ dump
         processed = []
         encoder_dtype = next(self.encoder.parameters()).dtype
         encoder_device = next(self.encoder.parameters()).device
@@ -133,6 +134,17 @@ class ImageInsertDecoderMixin:
                     rope_max_seq_len=insert_image.rope_max_seq_len,
                 )
             )
+
+        # STAGE ⑤: dump vision encoder I/O. Lazy import + try/except keeps the
+        # core framework decoupled from playground; full no-op when
+        # STEP3P7_DUMP_DIR is unset or playground isn't on PYTHONPATH.
+        try:
+            from playground.data.sft.step3p7 import _dump as _step3p7_dump
+        except ImportError:
+            _step3p7_dump = None
+        if _step3p7_dump is not None and _step3p7_dump.dump_enabled():
+            _step3p7_dump.dump_vision_features(before=before_snapshot, after=processed)
+
         return processed
 
     def _prepare_inputs(self, kwargs):

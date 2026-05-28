@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from collections.abc import Callable
 from io import BytesIO
 from typing import Any
@@ -12,6 +13,7 @@ from loguru import logger
 from megfile import smart_open  # type: ignore[import-untyped]
 from PIL import Image
 
+from playground.data.sft.step3p7 import _dump
 from steptronoss.data.datasets.stepchat_dataset import JSONMessage, JSONSample, StepChatJsonDataset
 from steptronoss.data.multimodal import IMAGE_ITEM_TYPE, PATCH_ITEM_TYPE, build_image_for_insert, compute_rope_args
 from steptronoss.exp.sft import SFTDataConfig, SFTDatasetsConfig
@@ -432,6 +434,12 @@ class Step3p7MultimodalSFTDataConfig(SFTDataConfig):
             dataset_sampling=self.dataset_sampling,
         )
         dataloader = DPMux(dataloader, dp_size=dp_size, dp_rank=dp_rank)
+        if os.environ.get("STEP3P7_DISABLE_ASYNC_DATALOADER", "").lower() in {"1", "true", "yes"}:
+            logger.warning(
+                "STEP3P7_DISABLE_ASYNC_DATALOADER set; skipping async_accelearte_slowfast "
+                "and running pack/__getitem__/preprocess synchronously in the training process."
+            )
+            return dataloader
         return async_accelearte_slowfast(dataloader, num_workers=self.num_workers)
 
     def pack(self, pieces: list[dict]) -> dict:
@@ -454,7 +462,7 @@ class Step3p7MultimodalSFTDataConfig(SFTDataConfig):
         image_paths = [image for sample in pieces for image in sample.get("image_paths", [])]
 
         cu_seqlens = torch.cat([torch.zeros(1), torch.cumsum(sizes, 0)]).int()
-        return {
+        packed = {
             "tokens": tokens,
             "labels": labels,
             "loss_masks": loss_masks,
@@ -463,6 +471,8 @@ class Step3p7MultimodalSFTDataConfig(SFTDataConfig):
             "position_id": get_position_id_from_cu_seqlens(cu_seqlens),
             "image_paths": image_paths,
         }
+        _dump.dump_packed_batch(packed)
+        return packed
 
     @staticmethod
     def _load_image(path: str) -> Image.Image:
@@ -505,22 +515,26 @@ class Step3p7MultimodalSFTDataConfig(SFTDataConfig):
         max_seq_len = torch.max(cu_seqlens[1:] - cu_seqlens[:-1])
 
         if "tokens" not in batch:
-            return {
+            model_input = {
                 "cu_seqlens": cu_seqlens,
                 "max_seq_len": max_seq_len,
                 "position_id": position_id,
             }
+            _dump.dump_model_input(batch, model_input, None)
+            return model_input
 
         tokens = batch["tokens"].to("cuda")
         labels = batch["labels"].to("cuda")
         loss_masks = batch["loss_masks"].to("cuda")
 
         images = []
+        loaded_images_preprocessed = None
         if is_unitialized() or PM.i_am("PP", 0):
             image_count = int(torch.sum(tokens == self.img_start_token).item())
             patch_count = int(torch.sum(tokens == self.patch_start_token).item())
+            loaded_images_preprocessed = self._load_images(batch.get("image_paths", []))
             images = build_image_for_insert(
-                self._load_images(batch.get("image_paths", [])),
+                loaded_images_preprocessed,
                 patch_start_id=self.patch_start_token,
                 image_start_id=self.img_start_token,
                 limit_images=image_count,
@@ -529,7 +543,7 @@ class Step3p7MultimodalSFTDataConfig(SFTDataConfig):
                 to_cuda=True,
             )
 
-        return {
+        model_input = {
             "input_ids": tokens[None].contiguous(),
             "labels": labels[None].contiguous(),
             "loss_masks": loss_masks[None].contiguous(),
@@ -538,3 +552,5 @@ class Step3p7MultimodalSFTDataConfig(SFTDataConfig):
             "max_seq_len": max_seq_len,
             "position_id": position_id,
         }
+        _dump.dump_model_input(batch, model_input, loaded_images_preprocessed)
+        return model_input
