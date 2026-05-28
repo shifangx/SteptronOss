@@ -166,6 +166,24 @@ def _save_pt(payload: Any, path: Path) -> None:
     torch.save(_detach_to_cpu(payload), path)
 
 
+_LOG_PREFIX = "[STEP3P7_DUMP/steptron]"
+
+
+def _log_dump(subdir: str, idx: int, pid: int, base: Path, *, has_pt: bool) -> None:
+    """Emit a one-line dump notice to stdout (loguru) + plain print() so
+    the message survives even if loguru handlers are off in the worker.
+    """
+    suffix = "+.pt" if has_pt else ".json only"
+    rank = _rank_info()
+    rank_str = " ".join(f"{k}={v}" for k, v in rank.items() if k != "pid")
+    msg = f"{_LOG_PREFIX} {subdir} idx={idx:04d} pid={pid} {rank_str} → {base.name} ({suffix})"
+    try:
+        logger.info(msg)
+    except Exception:
+        pass
+    print(msg, flush=True)
+
+
 def _write(subdir: str, name_stem: str, json_payload: dict, pt_payload: Any | None) -> Path | None:
     root = _dump_root()
     if root is None:
@@ -177,6 +195,7 @@ def _write(subdir: str, name_stem: str, json_payload: dict, pt_payload: Any | No
     out_dir.mkdir(parents=True, exist_ok=True)
     pid = os.getpid()
     base = out_dir / f"{idx:04d}_pid{pid}_{name_stem}"
+    _log_dump(subdir, idx, pid, base, has_pt=pt_payload is not None)
     with open(str(base) + ".json", "w") as f:
         json.dump(json_payload, f, ensure_ascii=False, indent=2, default=str)
     if pt_payload is not None:
@@ -199,6 +218,7 @@ def dump_samples(samples: list, *, repo_id: str, split: str) -> None:
     out_dir = root / "01_samples"
     out_dir.mkdir(parents=True, exist_ok=True)
     base = out_dir / f"{idx:04d}_pid{pid}_samples"
+    _log_dump("01_samples", idx, pid, base, has_pt=False)
 
     samples_info = [
         {
