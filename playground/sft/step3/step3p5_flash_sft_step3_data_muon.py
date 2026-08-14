@@ -166,11 +166,16 @@ class Step3p5FlashModelConfigBalanced(Step3p5FlashModelConfig):
         self.tp_cfg.sequence_parallel = True
 
     def pp_vp_allocation(self, abs_pp_rank: int) -> list[dict]:
-        # hard code for debug, num_layers = 45, pp=8, vpp=1
-        lengths = [6] * (PM.size_of("PP") * get_vpp_size())
-        lengths[6] = 5  # PP6
-        lengths[7] = 4  # PP7
 
+        # hard code for debug, num_layers = 45, pp=4, vpp=1
+        lengths = [12] * (PM.size_of("PP") * get_vpp_size())
+        lengths[3] = 9  # PP3
+        
+        # # hard code for debug, num_layers = 45, pp=8, vpp=1
+        # lengths = [6] * (PM.size_of("PP") * get_vpp_size())
+        # lengths[6] = 5  # PP6
+        # lengths[7] = 4  # PP7
+        
         # # PP=8, VPP=3 -> 24 slots. Start from 2 layers/slot and drop 1 layer on
         # # a few slots to get 45 layers total, while keeping PP7 off the floor.
         # lengths = [2] * (PM.size_of("PP") * get_vpp_size())
